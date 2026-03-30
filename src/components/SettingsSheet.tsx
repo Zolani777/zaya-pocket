@@ -26,7 +26,7 @@ function getSetupHeadline(support: RuntimeSupport, cachedModel: boolean, engineS
   if (!support.hasWebGpu) return 'WebGPU not available';
   if (engineState === 'loading') return 'Setting up offline chat';
   if (engineState === 'ready') return 'Offline chat is ready';
-  if (cachedModel) return 'Brain downloaded';
+  if (cachedModel) return 'Offline chat is downloaded';
   return 'Finish offline setup';
 }
 
@@ -52,12 +52,12 @@ export function SettingsSheet({
     <section className="settings-panel stack-lg">
       <section className="panel-section stack-md">
         <div>
-          <p className="eyebrow">Settings</p>
+          <p className="eyebrow">Setup</p>
           <h2>{getSetupHeadline(support, cachedModel, engineState)}</h2>
           <p>
             {support.supported
-              ? 'Once the first download finishes, your core chat can run locally on this device.'
-              : 'Open Zaya from Safari on HTTPS and make sure this device/browser exposes WebGPU, workers, and local storage.'}
+              ? 'Complete the first download and your core chat can run locally on this device.'
+              : 'Use Safari over HTTPS and make sure this device exposes WebGPU, workers, and local storage.'}
           </p>
         </div>
 
@@ -85,8 +85,8 @@ export function SettingsSheet({
         <section className="panel-section stack-md">
           <div>
             <p className="eyebrow">Install</p>
-            <h2>Put Zaya on your Home Screen</h2>
-            <p>That gives you the app feel, better caching, and a cleaner launch path on iPhone.</p>
+            <h2>Add Zaya to Home Screen</h2>
+            <p>That gives you the app feel, cleaner launches, and a better offline path on iPhone.</p>
           </div>
           {canPromptInstall ? (
             <button type="button" className="button button--secondary" onClick={() => void onInstall()}>
@@ -115,7 +115,7 @@ export function SettingsSheet({
         <div>
           <p className="eyebrow">Storage</p>
           <h2>Local data</h2>
-          <p>Clear chats and settings on this device any time.</p>
+          <p>Clear chats and settings from this device whenever you want a clean restart.</p>
         </div>
         <button type="button" className="button button--ghost" onClick={() => void onClearLocalData()}>
           Clear local data

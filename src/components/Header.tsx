@@ -3,12 +3,10 @@ import type { EngineState } from '@/types/chat';
 
 interface HeaderProps {
   engineState: EngineState;
-  online: boolean;
   cachedModel: boolean;
   panelOpen: boolean;
   onTogglePanel: () => void;
   onOpenSettings: () => void;
-  onCreateChat: () => void | Promise<void>;
 }
 
 function getAppStateLabel(engineState: EngineState, cachedModel: boolean): { label: string; tone: 'default' | 'success' | 'warning' | 'danger' } {
@@ -17,7 +15,7 @@ function getAppStateLabel(engineState: EngineState, cachedModel: boolean): { lab
   }
 
   if (engineState === 'ready') {
-    return { label: 'offline ready', tone: 'success' };
+    return { label: 'local ready', tone: 'success' };
   }
 
   if (engineState === 'error') {
@@ -33,27 +31,26 @@ function getAppStateLabel(engineState: EngineState, cachedModel: boolean): { lab
 
 export function Header({
   engineState,
-  online,
   cachedModel,
   panelOpen,
   onTogglePanel,
   onOpenSettings,
-  onCreateChat,
 }: HeaderProps) {
   const appState = getAppStateLabel(engineState, cachedModel);
 
   return (
     <header className="appbar">
-      <div className="appbar__group">
+      <div className="appbar__group appbar__group--brand">
         <button
           type="button"
-          className="icon-button mobile-only"
+          className="icon-button"
           onClick={onTogglePanel}
-          aria-label={panelOpen ? 'Close panel' : 'Open panel'}
+          aria-label={panelOpen ? 'Close sidebar' : 'Open sidebar'}
           aria-expanded={panelOpen}
         >
           {panelOpen ? '×' : '☰'}
         </button>
+
         <div className="brand brand--compact">
           <img className="brand__logo brand__logo--compact" src="/icons/icon-192.png" alt="Zaya Pocket logo" />
           <div>
@@ -64,12 +61,8 @@ export function Header({
       </div>
 
       <div className="appbar__group appbar__group--end" aria-live="polite">
-        <StatusPill label={online ? 'online' : 'offline'} tone={online ? 'success' : 'warning'} />
         <StatusPill label={appState.label} tone={appState.tone} />
-        <button type="button" className="icon-button desktop-only" onClick={() => void onCreateChat()} aria-label="New chat">
-          ＋
-        </button>
-        <button type="button" className="icon-button" onClick={onOpenSettings} aria-label="Open settings">
+        <button type="button" className="icon-button" onClick={onOpenSettings} aria-label="Open offline setup">
           ⚙
         </button>
       </div>

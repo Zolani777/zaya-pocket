@@ -5,8 +5,8 @@ interface ComposerProps {
   onChange: (value: string) => void;
   onSend: () => void | Promise<void>;
   onStop: () => void | Promise<void>;
-  disabled: boolean;
-  generating: boolean;
+  disabled?: boolean;
+  generating?: boolean;
   placeholder?: string;
 }
 
@@ -26,41 +26,60 @@ export function Composer({
     if (!element) return;
 
     element.style.height = '0px';
-    element.style.height = `${Math.min(element.scrollHeight, 160)}px`;
+    element.style.height = `${Math.min(element.scrollHeight, 120)}px`;
   }, [value]);
 
   return (
-    <section className="composer" aria-label="Message composer">
-      <label className="sr-only" htmlFor="zaya-composer">
-        Message Zaya Pocket
-      </label>
-      <div className="composer__inner card">
-        <textarea
-          id="zaya-composer"
-          ref={textareaRef}
-          value={value}
-          rows={1}
-          placeholder={placeholder}
-          onChange={(event) => onChange(event.target.value)}
-          onKeyDown={(event) => {
-            if (event.key === 'Enter' && !event.shiftKey) {
-              event.preventDefault();
-              void onSend();
-            }
-          }}
-          disabled={disabled}
-        />
-        <div className="composer__actions composer__actions--compact">
-          {generating ? (
-            <button type="button" className="button button--ghost" onClick={() => void onStop()}>
-              Stop
+    <section className="composer-shell" aria-label="Message composer">
+      <section className="composer">
+        <label className="sr-only" htmlFor="zaya-composer">
+          Message Zaya Pocket
+        </label>
+
+        <div className="composer__inner card">
+          <div className="composer__field-row">
+            <button type="button" className="composer__icon" aria-label="Voice note" disabled={disabled || generating}>
+              ✦
             </button>
-          ) : null}
-          <button type="button" className="button" onClick={() => void onSend()} disabled={disabled || !value.trim()}>
-            Send
-          </button>
+
+            <textarea
+              id="zaya-composer"
+              ref={textareaRef}
+              value={value}
+              rows={1}
+              placeholder={placeholder}
+              onChange={(event) => onChange(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === 'Enter' && !event.shiftKey) {
+                  event.preventDefault();
+                  void onSend();
+                }
+              }}
+              disabled={disabled}
+            />
+
+            <button type="button" className="composer__icon" aria-label="Record voice" disabled={disabled || generating}>
+              ◉
+            </button>
+
+            {generating ? (
+              <button type="button" className="composer__send composer__send--stop" onClick={() => void onStop()}>
+                ■
+              </button>
+            ) : (
+              <button
+                type="button"
+                className="composer__send"
+                onClick={() => void onSend()}
+                disabled={disabled || !value.trim()}
+                aria-label="Send message"
+              >
+                ➤
+              </button>
+            )}
+          </div>
         </div>
-      </div>
+      </section>
     </section>
   );
 }

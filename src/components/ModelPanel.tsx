@@ -37,7 +37,7 @@ export function ModelPanel({
       <div>
         <p className="eyebrow">Offline setup</p>
         <h2>Choose your local brain</h2>
-        <p>Starter is the best first setup. You can upgrade later once the device proves stable.</p>
+        <p>Starter is the safest first setup. Enhanced is there when you want a heavier upgrade.</p>
       </div>
 
       <div className="model-grid" role="radiogroup" aria-label="Available models">
@@ -76,7 +76,7 @@ export function ModelPanel({
         </div>
       </div>
 
-      <div className="button-row">
+      <div className="button-row button-row--stacked-mobile">
         <button className="button" onClick={() => void onWarmup()} disabled={busy || !supported}>
           {getPrimaryLabel(cached, engineState)}
         </button>

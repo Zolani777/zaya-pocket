@@ -400,22 +400,20 @@ export default function App() {
   }
 
   const composerPlaceholder = !support.supported
-    ? 'Open Settings and use a supported browser/device for offline chat.'
+    ? 'This device still needs the right graphics support for local chat.'
     : cachedModel || engineState === 'ready'
       ? 'Message Zaya…'
-      : 'Open Settings to finish offline setup…';
+      : 'Open Offline setup to finish the first download…';
 
   return (
     <>
       <div className="app-shell">
         <Header
           engineState={engineState}
-          online={online}
           cachedModel={cachedModel}
           panelOpen={panelOpen}
           onTogglePanel={() => setPanelOpen((current) => !current)}
           onOpenSettings={() => openSidebarTab('settings')}
-          onCreateChat={createConversation}
         />
 
         <div className="workspace">
@@ -444,7 +442,7 @@ export default function App() {
                   aria-selected={sidebarTab === 'settings'}
                   onClick={() => setSidebarTab('settings')}
                 >
-                  Settings
+                  Offline setup
                 </button>
               </div>
               <button type="button" className="icon-button mobile-only" onClick={closeMobilePanel} aria-label="Close panel">

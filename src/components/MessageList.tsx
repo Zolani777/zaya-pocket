@@ -31,11 +31,11 @@ export function MessageList({
           <p>
             {supported
               ? cachedModel
-                ? 'Start a new conversation. Your chats stay on this device.'
-                : 'Finish offline setup once, then Zaya can work without the network.'
-              : 'This browser is missing the graphics features Zaya needs for offline chat.'}
+                ? 'Start a new chat and your local history stays right here on the phone.'
+                : 'Finish offline setup once, then Zaya can run without the network.'
+              : 'This browser still needs the graphics support Zaya uses for offline chat.'}
           </p>
-          <div className="button-row button-row--centered">
+          <div className="button-row button-row--centered button-row--stacked-mobile">
             <button type="button" className="button" onClick={() => void onCreateChat()}>
               New chat
             </button>

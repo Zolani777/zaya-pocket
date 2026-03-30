@@ -21,10 +21,10 @@ export function ConversationList({
       <div className="panel-header panel-header--tight">
         <div>
           <p className="eyebrow">Chats</p>
-          <h2>Your conversations</h2>
+          <h2>Local conversations</h2>
         </div>
         <button className="button button--ghost" onClick={() => void onCreate()}>
-          New
+          New chat
         </button>
       </div>
 
@@ -32,7 +32,7 @@ export function ConversationList({
         {conversations.length === 0 ? (
           <div className="empty-card">
             <strong>No chats yet</strong>
-            <p>Start a conversation and it stays on this device.</p>
+            <p>Your conversation history will stay on this device.</p>
           </div>
         ) : (
           conversations.map((conversation) => {
