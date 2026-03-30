@@ -1,46 +1,70 @@
+function extractMessage(value: unknown): string | null {
+  if (!value) return null;
+
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    return trimmed || null;
+  }
+
+  if (value instanceof Error) {
+    if (value.message?.trim()) return value.message.trim();
+    return value.name?.trim() || null;
+  }
+
+  if (typeof value === 'object') {
+    const record = value as Record<string, unknown>;
+
+    const direct =
+      extractMessage(record.message) ??
+      extractMessage(record.reason) ??
+      extractMessage(record.error) ??
+      extractMessage(record.details) ??
+      extractMessage(record.cause);
+
+    if (direct) return direct;
+
+    try {
+      const json = JSON.stringify(value);
+      if (json && json !== '{}' && json !== '[]') return json;
+    } catch {
+      // ignore
+    }
+  }
+
+  return null;
+}
+
 export function toReadableError(error: unknown): string {
-  if (error instanceof Error) {
-    const message = error.message.trim();
-    const lowered = message.toLowerCase();
+  const message = extractMessage(error) ?? 'Something went wrong.';
+  const normalized = message.toLowerCase();
 
-    if (!message) {
-      return 'Something went wrong.';
-    }
-
-    if (lowered.includes('response is not ok') || lowered.includes('failed to fetch') || lowered.includes('networkerror')) {
-      return 'The offline model files could not be reached. Make sure your connection is stable and try the download again.';
-    }
-
-    if (lowered.includes('compatible gpu') || lowered.includes('webgpu')) {
-      return 'This device could not start the local AI model here.';
-    }
-
-    if (lowered.includes('finish offline setup')) {
-      return 'Finish offline setup before sending your first message.';
-    }
-
-    if (lowered.includes('quota') || lowered.includes('storage')) {
-      return 'There is not enough free storage on this device for the offline model download.';
-    }
-
-    if (lowered.includes('not allowed in zaya pocket')) {
-      return 'That model is not enabled in this build of Zaya Pocket.';
-    }
-
-    if (lowered.includes('not registered in the local model runtime')) {
-      return 'The selected offline model could not be found in the local runtime registry.';
-    }
-
-    if (lowered.includes('not loaded yet')) {
-      return 'The offline model is not ready yet. Finish setup first.';
-    }
-
-    return message;
+  if (normalized === '[object object]') {
+    return 'Offline setup failed after download started. Try the download again.';
   }
 
-  if (typeof error === 'string') {
-    return error;
+  if (normalized.includes('response is not ok') || normalized.includes('failed to fetch') || normalized.includes('networkerror')) {
+    return 'The offline model files could not be downloaded. Check your connection and try again.';
   }
 
-  return 'Something went wrong.';
+  if (normalized.includes('not enough') || normalized.includes('quota') || normalized.includes('storage')) {
+    return 'This device does not have enough free storage for the offline model.';
+  }
+
+  if (normalized.includes('compatible gpu') || normalized.includes('webgpu') || normalized.includes('adapter')) {
+    return 'This phone could not finish starting the local AI model.';
+  }
+
+  if (normalized.includes('abort')) {
+    return 'The offline setup was interrupted before it finished.';
+  }
+
+  if (normalized.includes('404') || normalized.includes('not found')) {
+    return 'Some offline model files could not be found during setup.';
+  }
+
+  if (normalized.includes('cache')) {
+    return 'The offline model cache could not be prepared correctly.';
+  }
+
+  return message;
 }

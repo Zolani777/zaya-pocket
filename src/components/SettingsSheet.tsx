@@ -85,7 +85,6 @@ export function SettingsSheet({
           cached={cachedModel}
           busy={busy}
           supported={supported}
-          online={online}
           engineState={engineState}
         />
 

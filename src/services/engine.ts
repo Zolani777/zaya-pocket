@@ -1,7 +1,9 @@
 import type {
+  AppConfig,
   ChatCompletionMessageParam,
   InitProgressReport,
   MLCEngineInterface,
+  ModelRecord,
 } from '@mlc-ai/web-llm';
 
 type WebLLMModule = typeof import('@mlc-ai/web-llm');
@@ -17,7 +19,8 @@ class ZayaEngine {
   private activeModelId: string | null = null;
   private webllm: WebLLMModule | null = null;
   private bootPromise: Promise<void> | null = null;
-  private bootingModelId: string | null = null;
+  private bootModelId: string | null = null;
+  private appConfig: AppConfig | null = null;
 
   private async getWebLLM(): Promise<WebLLMModule> {
     if (!this.webllm) {
@@ -27,21 +30,26 @@ class ZayaEngine {
     return this.webllm;
   }
 
-  private async getAppConfig(modelId: string) {
-    const { prebuiltAppConfig } = await this.getWebLLM();
-    const record = prebuiltAppConfig.model_list.find((item) => item.model_id === modelId);
+  private async getAppConfig(): Promise<AppConfig> {
+    if (this.appConfig) return this.appConfig;
 
-    if (!record) {
-      throw new Error('This model is not registered in the local model runtime.');
+    const { prebuiltAppConfig } = await this.getWebLLM();
+    const model_list = prebuiltAppConfig.model_list.filter((record) => ALLOWED_MODEL_IDS.has(record.model_id));
+
+    if (model_list.length !== ALLOWED_MODEL_IDS.size) {
+      const found = model_list.map((record) => record.model_id).join(', ');
+      throw new Error(`Could not find the required offline model records. Found: ${found || 'none'}.`);
     }
 
-    return {
-      ...prebuiltAppConfig,
-      model_list: [record],
+    this.appConfig = {
+      model_list: model_list as ModelRecord[],
+      useIndexedDBCache: false,
     };
+
+    return this.appConfig;
   }
 
-  private ensureWorker(): Worker {
+  private getOrCreateWorker(): Worker {
     if (!this.worker) {
       this.worker = new Worker(new URL('../workers/mlc.worker.ts', import.meta.url), {
         type: 'module',
@@ -51,100 +59,94 @@ class ZayaEngine {
     return this.worker;
   }
 
+  private wrapProgress(modelId: string, onProgress?: (progress: InitProgressReport) => void) {
+    return (progress: InitProgressReport) => {
+      const numeric = typeof progress.progress === 'number' ? Math.max(0, Math.min(1, progress.progress)) : 0;
+      let text = progress.text?.trim() || '';
+
+      if (!text) {
+        text = numeric >= 1 ? 'Initializing offline model…' : 'Downloading offline model…';
+      } else if (/fetching|cache\[|loading model from cache/i.test(text)) {
+        text = numeric >= 1 ? 'Initializing offline model…' : 'Downloading offline model…';
+      } else if (/initializ|creating|instantiating|warm/i.test(text)) {
+        text = 'Initializing offline model…';
+      }
+
+      onProgress?.({ ...progress, progress: numeric, text });
+    };
+  }
+
   async boot(
     modelId: string,
     onProgress?: (progress: InitProgressReport) => void,
   ): Promise<void> {
     if (!ALLOWED_MODEL_IDS.has(modelId)) {
-      throw new Error('This model is not allowed in Zaya Pocket.');
-    }
-
-    if (this.engine && this.activeModelId === modelId && !this.bootPromise) {
-      onProgress?.({ progress: 1, text: 'Offline model is ready.' } as InitProgressReport);
-      return;
+      throw new Error('This model is not supported by Zaya Pocket.');
     }
 
     if (this.bootPromise) {
-      return this.bootPromise;
+      if (this.bootModelId === modelId) {
+        return this.bootPromise;
+      }
+      throw new Error('Another offline setup is already running. Wait for it to finish first.');
     }
 
-    this.bootingModelId = modelId;
-
-    this.bootPromise = (async () => {
-      const { WebWorkerMLCEngine } = await this.getWebLLM();
-      const appConfig = await this.getAppConfig(modelId);
-      const worker = this.ensureWorker();
-
-      onProgress?.({ progress: 0, text: 'Starting offline setup…' } as InitProgressReport);
-
-      const initialStageTimer = window.setTimeout(() => {
-        onProgress?.({
-          progress: 0.01,
-          text: 'Starting the first download… keep this screen open.',
-        } as InitProgressReport);
-      }, 5000);
-
-      const slowStageTimer = window.setTimeout(() => {
-        onProgress?.({
-          progress: 0.02,
-          text: 'The first download can sit at 0% for a bit on iPhone. Let it keep running.',
-        } as InitProgressReport);
-      }, 15000);
+    const run = async () => {
+      const { CreateWebWorkerMLCEngine } = await this.getWebLLM();
+      const appConfig = await this.getAppConfig();
+      const progressCallback = this.wrapProgress(modelId, onProgress);
+      const worker = this.getOrCreateWorker();
 
       try {
         if (!this.engine) {
-          this.engine = new WebWorkerMLCEngine(worker, {
+          this.engine = await CreateWebWorkerMLCEngine(worker, modelId, {
             appConfig,
-            initProgressCallback: onProgress,
+            initProgressCallback: progressCallback,
           });
-        } else {
-          this.engine.setInitProgressCallback(onProgress);
-          this.engine.setAppConfig(appConfig);
+          this.activeModelId = modelId;
+          progressCallback({ progress: 1, timeElapsed: 0, text: 'Offline model is ready.' });
+          return;
         }
 
+        this.engine.setInitProgressCallback(progressCallback);
+
         if (this.activeModelId !== modelId) {
+          progressCallback({ progress: 0.98, timeElapsed: 0, text: 'Initializing offline model…' });
           await this.engine.reload(modelId);
           this.activeModelId = modelId;
         }
 
-        onProgress?.({ progress: 1, text: 'Offline model is ready.' } as InitProgressReport);
-      } finally {
-        window.clearTimeout(initialStageTimer);
-        window.clearTimeout(slowStageTimer);
-        this.bootPromise = null;
-        this.bootingModelId = null;
+        progressCallback({ progress: 1, timeElapsed: 0, text: 'Offline model is ready.' });
+      } catch (error) {
+        await this.unload();
+        throw error;
       }
-    })();
+    };
+
+    this.bootModelId = modelId;
+    this.bootPromise = run().finally(() => {
+      this.bootPromise = null;
+      this.bootModelId = null;
+    });
 
     return this.bootPromise;
   }
 
   isReady(): boolean {
-    return Boolean(this.engine && this.activeModelId);
-  }
-
-  isBooting(): boolean {
-    return Boolean(this.bootPromise);
-  }
-
-  getBootingModelId(): string | null {
-    return this.bootingModelId;
+    return Boolean(this.engine);
   }
 
   async isModelCached(modelId: string): Promise<boolean> {
     const { hasModelInCache } = await this.getWebLLM();
-    return hasModelInCache(modelId);
+    return hasModelInCache(modelId, await this.getAppConfig());
   }
 
   async removeCachedModel(modelId: string): Promise<void> {
     const { deleteModelAllInfoInCache } = await this.getWebLLM();
-    await deleteModelAllInfoInCache(modelId);
+    await deleteModelAllInfoInCache(modelId, await this.getAppConfig());
 
     if (this.activeModelId === modelId) {
-      this.activeModelId = null;
-      this.engine = null;
-      this.worker?.terminate();
-      this.worker = null;
+      await this.unload();
     }
   }
 
@@ -155,11 +157,13 @@ class ZayaEngine {
 
   async unload(): Promise<void> {
     if (this.engine) {
-      await this.engine.unload();
+      try {
+        await this.engine.unload();
+      } catch {
+        // ignore unload errors during recovery
+      }
     }
 
-    this.bootPromise = null;
-    this.bootingModelId = null;
     this.engine = null;
     this.activeModelId = null;
     this.worker?.terminate();
@@ -171,7 +175,7 @@ class ZayaEngine {
     onToken: (token: string) => void,
   ): Promise<string> {
     if (!this.engine) {
-      throw new Error('The offline model is not loaded yet.');
+      throw new Error('The model is not loaded yet.');
     }
 
     const stream = await this.engine.chat.completions.create({
