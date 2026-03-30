@@ -14,12 +14,6 @@ interface ModelPanelProps {
   engineState: EngineState;
 }
 
-function getPrimaryLabel(cached: boolean, engineState: EngineState) {
-  if (engineState === 'loading') return 'Preparing…';
-  if (cached) return 'Load downloaded brain';
-  return 'Enable offline chat';
-}
-
 export function ModelPanel({
   selectedModelId,
   onSelect,
@@ -32,35 +26,36 @@ export function ModelPanel({
   supported,
   engineState,
 }: ModelPanelProps) {
+  const buttonLabel = cached
+    ? engineState === 'ready'
+      ? 'Model is ready'
+      : 'Load downloaded model'
+    : 'Download offline model';
+
   return (
-    <section className="panel-section stack-md">
+    <section className="sheet-card stack-md">
       <div>
         <p className="eyebrow">Offline setup</p>
         <h2>Choose your local brain</h2>
-        <p>Starter is the safest first setup. Enhanced stays here when you want the heavier upgrade later.</p>
+        <p>Start with Starter. The larger model can wait until the device proves stable.</p>
       </div>
 
-      <div className="model-grid" role="radiogroup" aria-label="Available models">
+      <div className="sheet-models">
         {MODEL_OPTIONS.map((model) => {
           const selected = selectedModelId === model.id;
           return (
             <button
               key={model.id}
               type="button"
-              className={`model-card ${selected ? 'model-card--selected' : ''}`}
+              className={`sheet-model ${selected ? 'sheet-model--selected' : ''}`}
               onClick={() => onSelect(model.id)}
-              aria-pressed={selected}
             >
-              <div className="model-card__topline">
-                <strong>{model.name}</strong>
-                {model.recommended ? <span className="model-badge">Best first</span> : null}
+              <div className="sheet-model__topline">
+                <strong>{model.recommended ? 'Starter' : 'Enhanced'}</strong>
+                <span>{model.name}</span>
               </div>
-              <div className="model-subline">
-                <span>{model.sizeLabel}</span>
-                <span>{model.memoryLabel}</span>
-              </div>
-              <p>{model.description}</p>
-              {model.caution ? <p className="model-caution">{model.caution}</p> : null}
+              <p>{model.recommended ? 'Best first setup for most phones.' : 'Sharper replies, but heavier.'}</p>
+              <small>{model.recommended ? 'About 1 GB download' : 'About 2.3 GB download'}</small>
             </button>
           );
         })}
@@ -76,11 +71,11 @@ export function ModelPanel({
         </div>
       </div>
 
-      <div className="button-row button-row--stacked-mobile">
-        <button className="button" onClick={() => void onWarmup()} disabled={busy || !supported}>
-          {getPrimaryLabel(cached, engineState)}
+      <div className="button-row">
+        <button className="button" type="button" onClick={() => void onWarmup()} disabled={busy || !supported || engineState === 'ready'}>
+          {buttonLabel}
         </button>
-        <button className="button button--ghost" onClick={() => void onDeleteCache()} disabled={busy || !cached}>
+        <button className="button button--ghost" type="button" onClick={() => void onDeleteCache()} disabled={busy || !cached}>
           Remove downloaded brain
         </button>
       </div>

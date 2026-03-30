@@ -18,9 +18,9 @@ interface SettingsSheetProps {
   onSelectConversation: (id: string) => void;
   onCreateConversation: () => void | Promise<void>;
   onDeleteConversation: (id: string) => void | Promise<void>;
-  onClearLocalData: () => void | Promise<void>;
+  onClearAllData: () => void | Promise<void>;
+  supported: boolean;
   online: boolean;
-  isStandalone: boolean;
   engineState: EngineState;
 }
 
@@ -40,31 +40,32 @@ export function SettingsSheet({
   onSelectConversation,
   onCreateConversation,
   onDeleteConversation,
-  onClearLocalData,
+  onClearAllData,
+  supported,
   online,
-  isStandalone,
   engineState,
 }: SettingsSheetProps) {
   if (!open) return null;
 
   return (
-    <div className="settings-sheet__backdrop" onClick={onClose}>
-      <aside className="settings-sheet" onClick={(event) => event.stopPropagation()} aria-label="Settings">
-        <div className="settings-sheet__header">
+    <div className="sheet-backdrop" role="dialog" aria-modal="true" aria-label="Settings">
+      <section className="sheet glass-panel">
+        <div className="sheet__header">
           <div>
             <p className="eyebrow">Settings</p>
             <h2>Offline setup</h2>
           </div>
-          <button type="button" className="header-icon-button" aria-label="Close settings" onClick={onClose}>
+          <button className="icon-button" type="button" onClick={onClose} aria-label="Close settings">
             ×
           </button>
         </div>
 
-        <section className="settings-summary card-lite">
-          <div className="settings-summary__row"><span>Network</span><strong>{online ? 'Online' : 'Offline'}</strong></div>
-          <div className="settings-summary__row"><span>App mode</span><strong>{isStandalone ? 'Home Screen app' : 'Browser'}</strong></div>
-          <div className="settings-summary__row"><span>Model</span><strong>{cachedModel ? 'Cached' : 'Not cached'}</strong></div>
-          <div className="settings-summary__row"><span>State</span><strong>{engineState === 'ready' ? 'Ready' : engineState === 'loading' ? 'Setting up' : engineState === 'error' ? 'Attention needed' : 'Idle'}</strong></div>
+        <section className="sheet-card sheet-stats">
+          <div className="sheet-stat"><span>Network</span><strong>{online ? 'Online' : 'Offline'}</strong></div>
+          <div className="sheet-stat"><span>App mode</span><strong>Home Screen app</strong></div>
+          <div className="sheet-stat"><span>Model</span><strong>{cachedModel ? 'Cached' : 'Not cached'}</strong></div>
+          <div className="sheet-stat"><span>State</span><strong>{engineState}</strong></div>
+          {!supported ? <p className="sheet-warning">This browser is missing some features needed for local AI.</p> : null}
         </section>
 
         <ModelPanel
@@ -76,30 +77,38 @@ export function SettingsSheet({
           progressValue={progressValue}
           cached={cachedModel}
           busy={busy}
+          supported={supported}
+          engineState={engineState}
         />
 
-        <ConversationList
-          conversations={conversations}
-          activeConversationId={activeConversationId}
-          onSelect={(id) => {
-            onSelectConversation(id);
-            onClose();
-          }}
-          onCreate={onCreateConversation}
-          onDelete={onDeleteConversation}
-        />
+        <section className="sheet-card stack-md">
+          <div>
+            <p className="eyebrow">Chats</p>
+            <h2>Local conversations</h2>
+          </div>
+          <ConversationList
+            conversations={conversations}
+            activeConversationId={activeConversationId}
+            onSelect={(id) => {
+              onSelectConversation(id);
+              onClose();
+            }}
+            onCreate={onCreateConversation}
+            onDelete={onDeleteConversation}
+          />
+        </section>
 
-        <section className="card stack-md">
+        <section className="sheet-card stack-md">
           <div>
             <p className="eyebrow">Storage</p>
             <h2>Local data</h2>
-            <p>Clear chats and settings on this device whenever you want a clean restart.</p>
+            <p>Clear chats and setup on this device whenever you need a clean restart.</p>
           </div>
-          <button className="button button--ghost" onClick={() => void onClearLocalData()}>
+          <button className="button button--ghost" type="button" onClick={() => void onClearAllData()}>
             Clear local data
           </button>
         </section>
-      </aside>
+      </section>
     </div>
   );
 }

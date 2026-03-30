@@ -1,4 +1,3 @@
-import { formatClock } from '@/lib/date';
 import type { ChatMessage } from '@/types/chat';
 
 interface MessageBubbleProps {
@@ -6,15 +5,13 @@ interface MessageBubbleProps {
 }
 
 export function MessageBubble({ message }: MessageBubbleProps) {
-  const isAssistant = message.role === 'assistant';
+  const fromUser = message.role === 'user';
 
   return (
-    <article className={`message-row ${isAssistant ? 'message-row--assistant' : 'message-row--user'}`}>
-      <div className={`message-bubble ${isAssistant ? 'message-bubble--assistant' : 'message-bubble--user'}`}>
-        <p>{message.content || (message.status === 'streaming' ? '…' : '')}</p>
+    <article className={`message ${fromUser ? 'message--user' : 'message--assistant'}`}>
+      <div className="message__bubble">
+        <p>{message.content}</p>
       </div>
-      <time className="message-time">{formatClock(message.createdAt)}</time>
-      {message.status === 'error' ? <small className="message-error">Generation failed. Try again.</small> : null}
     </article>
   );
 }

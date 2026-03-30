@@ -4,11 +4,13 @@ interface ComposerProps {
   value: string;
   onChange: (value: string) => void;
   onSend: () => void | Promise<void>;
+  onStop: () => void | Promise<void>;
   disabled: boolean;
-  lockedMessage?: string;
+  generating: boolean;
+  placeholder: string;
 }
 
-export function Composer({ value, onChange, onSend, disabled, lockedMessage }: ComposerProps) {
+export function Composer({ value, onChange, onSend, onStop, disabled, generating, placeholder }: ComposerProps) {
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
 
   useEffect(() => {
@@ -16,12 +18,12 @@ export function Composer({ value, onChange, onSend, disabled, lockedMessage }: C
     if (!element) return;
 
     element.style.height = '0px';
-    element.style.height = `${Math.min(element.scrollHeight, 140)}px`;
+    element.style.height = `${Math.min(element.scrollHeight, 120)}px`;
   }, [value]);
 
   return (
-    <section className="composer-shell" aria-label="Message composer">
-      <div className="composer-bar">
+    <section className="composer-shell">
+      <div className="composer glass-panel">
         <label className="sr-only" htmlFor="zaya-composer">
           Message Zaya Pocket
         </label>
@@ -30,7 +32,7 @@ export function Composer({ value, onChange, onSend, disabled, lockedMessage }: C
           ref={textareaRef}
           value={value}
           rows={1}
-          placeholder={lockedMessage ?? 'Message Zaya…'}
+          placeholder={placeholder}
           onChange={(event) => onChange(event.target.value)}
           onKeyDown={(event) => {
             if (event.key === 'Enter' && !event.shiftKey) {
@@ -41,15 +43,20 @@ export function Composer({ value, onChange, onSend, disabled, lockedMessage }: C
           disabled={disabled}
         />
 
-        <button
-          type="button"
-          className="composer-send"
-          aria-label="Send message"
-          onClick={() => void onSend()}
-          disabled={disabled || !value.trim()}
-        >
-          ➤
-        </button>
+        <div className="composer__actions">
+          {generating ? (
+            <button className="composer__circle composer__circle--secondary" type="button" onClick={() => void onStop()}>
+              ■
+            </button>
+          ) : (
+            <button className="composer__circle composer__circle--secondary" type="button" disabled aria-hidden="true">
+              ○
+            </button>
+          )}
+          <button className="composer__circle composer__circle--send" type="button" onClick={() => void onSend()} disabled={disabled || !value.trim()}>
+            ➤
+          </button>
+        </div>
       </div>
     </section>
   );

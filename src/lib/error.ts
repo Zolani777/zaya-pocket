@@ -3,15 +3,11 @@ export function toReadableError(error: unknown): string {
     const message = error.message.trim();
 
     if (/response is not ok/i.test(message)) {
-      return 'The offline model files could not be downloaded. Check your connection and try again.';
-    }
-
-    if (/failed to fetch/i.test(message)) {
-      return 'Zaya could not reach the download source just now. Try again in a moment.';
+      return 'The offline model download could not be completed.';
     }
 
     if (/compatible gpu/i.test(message) || /webgpu/i.test(message)) {
-      return 'This device/browser cannot start local AI here yet.';
+      return 'This device could not start the local AI model here.';
     }
 
     return message || 'Something went wrong.';

@@ -1,10 +1,10 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import type { ChatCompletionMessageParam, InitProgressReport } from '@mlc-ai/web-llm';
 import { Header } from '@/components/Header';
+import { SettingsSheet } from '@/components/SettingsSheet';
 import { MessageList } from '@/components/MessageList';
 import { Composer } from '@/components/Composer';
 import { Toast } from '@/components/Toast';
-import { SettingsSheet } from '@/components/SettingsSheet';
 import { buildSystemPrompt } from '@/config/persona';
 import { DEFAULT_MODEL_ID } from '@/constants/models';
 import { createId } from '@/lib/id';
@@ -22,7 +22,6 @@ import {
 } from '@/lib/db';
 import { toReadableError } from '@/lib/error';
 import { useOnlineStatus } from '@/hooks/useOnlineStatus';
-import { usePwaInstall } from '@/hooks/usePwaInstall';
 import { zayaEngine } from '@/services/engine';
 import type { ChatMessage, ConversationRecord, EngineState, ToastState } from '@/types/chat';
 import './styles.css';
@@ -42,26 +41,9 @@ function createConversationRecord(modelId: string): ConversationRecord {
   };
 }
 
-function normalizeProgressText(text: string | undefined, cachedModel: boolean): string {
-  if (!text) {
-    return cachedModel ? 'Local model cached on this device.' : 'Offline chat has not been enabled yet.';
-  }
-
-  if (/fetching param cache/i.test(text) || /prefill/i.test(text) || /populate the cache/i.test(text)) {
-    return 'Downloading the starter brain for this device…';
-  }
-
-  if (/loading local model/i.test(text) || /initializing/i.test(text)) {
-    return 'Preparing the local model…';
-  }
-
-  return text;
-}
-
 export default function App() {
   const support = useMemo(() => getRuntimeSupport(), []);
   const online = useOnlineStatus();
-  const { isStandalone } = usePwaInstall();
 
   const [engineState, setEngineState] = useState<EngineState>('idle');
   const [conversations, setConversations] = useState<ConversationRecord[]>([]);
@@ -71,7 +53,7 @@ export default function App() {
   const [selectedModelId, setSelectedModelId] = useState(DEFAULT_MODEL_ID);
   const [cachedModel, setCachedModel] = useState(false);
   const [progressValue, setProgressValue] = useState(0);
-  const [progressText, setProgressText] = useState('Offline chat has not been enabled yet.');
+  const [progressText, setProgressText] = useState('Offline setup has not been started yet.');
   const [toast, setToast] = useState<ToastState | null>(null);
   const [generating, setGenerating] = useState(false);
   const [bootstrapped, setBootstrapped] = useState(false);
@@ -81,7 +63,6 @@ export default function App() {
     try {
       const cached = await zayaEngine.isModelCached(modelId);
       setCachedModel(cached);
-      setProgressText((current) => normalizeProgressText(current, cached));
     } catch {
       setCachedModel(false);
     }
@@ -132,43 +113,41 @@ export default function App() {
       setMessages([]);
       return;
     }
-
     void loadMessages(activeConversationId);
     void saveSetting(ACTIVE_CONVERSATION_KEY, activeConversationId);
   }, [activeConversationId, loadMessages]);
 
   useEffect(() => {
     if (!toast) return;
-    const timer = window.setTimeout(() => setToast(null), 2800);
+    const timer = window.setTimeout(() => setToast(null), 2400);
     return () => window.clearTimeout(timer);
   }, [toast]);
 
   function handleProgress(progress: InitProgressReport) {
     const numeric = typeof progress.progress === 'number' ? progress.progress : 0;
     setProgressValue(Math.max(0, Math.min(1, numeric)));
-    setProgressText(normalizeProgressText(progress.text, cachedModel));
+    setProgressText(progress.text || 'Preparing offline model…');
   }
 
   async function warmupModel() {
     if (!support.supported) {
-      setToast({ id: createId('toast'), tone: 'error', message: 'This browser cannot start local AI here yet.' });
+      setToast({ id: createId('toast'), tone: 'error', message: 'This browser is missing the features needed for local AI.' });
       return;
     }
 
     try {
       setEngineState('loading');
       setProgressValue(0);
-      setProgressText('Preparing the local model…');
+      setProgressText('Preparing offline model…');
       await zayaEngine.boot(selectedModelId, handleProgress);
       setEngineState('ready');
       await refreshCachedModel();
-      setProgressText('Offline chat is ready on this device.');
-      setToast({ id: createId('toast'), tone: 'success', message: 'Offline chat is ready.' });
+      setProgressText('Offline model is ready on this device.');
+      setToast({ id: createId('toast'), tone: 'success', message: 'Offline setup finished.' });
     } catch (error) {
       setEngineState('error');
       setProgressText('Offline setup failed.');
       setToast({ id: createId('toast'), tone: 'error', message: toReadableError(error) });
-      throw error;
     }
   }
 
@@ -177,9 +156,9 @@ export default function App() {
       await zayaEngine.removeCachedModel(selectedModelId);
       setEngineState('idle');
       setProgressValue(0);
-      setProgressText('Offline chat has not been enabled yet.');
+      setProgressText('Downloaded model was removed.');
       await refreshCachedModel();
-      setToast({ id: createId('toast'), tone: 'success', message: 'Downloaded brain removed from this device.' });
+      setToast({ id: createId('toast'), tone: 'success', message: 'Downloaded model removed.' });
     } catch (error) {
       setToast({ id: createId('toast'), tone: 'error', message: toReadableError(error) });
     }
@@ -191,7 +170,8 @@ export default function App() {
 
     const created = createConversationRecord(selectedModelId);
     await saveConversation(created);
-    setConversations((current) => [created, ...current]);
+    const next = [created, ...conversations];
+    setConversations(next);
     setActiveConversationId(created.id);
     return created;
   }
@@ -226,7 +206,7 @@ export default function App() {
 
   async function sendMessage() {
     const userText = draft.trim();
-    if (!userText || generating) return;
+    if (!userText || generating || !chatUnlocked) return;
 
     try {
       setGenerating(true);
@@ -257,7 +237,8 @@ export default function App() {
         status: 'streaming',
       };
 
-      setMessages((current) => [...current, userMessage, assistantMessage]);
+      const nextMessages = [...messages, userMessage, assistantMessage];
+      setMessages(nextMessages);
       await saveMessages([userMessage, assistantMessage]);
 
       const promptMessages: ChatCompletionMessageParam[] = [
@@ -272,7 +253,9 @@ export default function App() {
         streamedContent += token;
         setMessages((current) =>
           current.map((message) =>
-            message.id === assistantMessage.id ? { ...message, content: `${message.content}${token}` } : message,
+            message.id === assistantMessage.id
+              ? { ...message, content: `${message.content}${token}` }
+              : message,
           ),
         );
       });
@@ -304,13 +287,27 @@ export default function App() {
       setMessages((current) =>
         current.map((message) =>
           message.status === 'streaming'
-            ? { ...message, status: 'error', content: message.content || 'Local generation failed.' }
+            ? {
+                ...message,
+                status: 'error',
+                content: message.content || 'Local generation failed.',
+              }
             : message,
         ),
       );
       setToast({ id: createId('toast'), tone: 'error', message: toReadableError(error) });
     } finally {
       setGenerating(false);
+    }
+  }
+
+  async function stopGeneration() {
+    try {
+      await zayaEngine.interrupt();
+      setGenerating(false);
+      setMessages((current) => current.map((message) => (message.status === 'streaming' ? { ...message, status: 'complete' } : message)));
+    } catch (error) {
+      setToast({ id: createId('toast'), tone: 'error', message: toReadableError(error) });
     }
   }
 
@@ -324,38 +321,37 @@ export default function App() {
       setDraft('');
       setEngineState('idle');
       setProgressValue(0);
-      setProgressText('Offline chat has not been enabled yet.');
+      setProgressText('Offline setup has not been started yet.');
       setCachedModel(false);
       setSettingsOpen(false);
-      setToast({ id: createId('toast'), tone: 'success', message: 'Everything local was cleared.' });
     } catch (error) {
       setToast({ id: createId('toast'), tone: 'error', message: toReadableError(error) });
     }
   }
 
-  const chatUnlocked = support.supported && cachedModel && engineState !== 'loading';
+  const chatUnlocked = support.supported && (cachedModel || engineState === 'ready');
 
   return (
     <>
-      <div className="mobile-app-shell">
-        <Header engineState={engineState} cachedModel={cachedModel} onOpenSettings={() => setSettingsOpen(true)} />
+      <div className="app-shell">
+        <Header
+          online={online}
+          chatUnlocked={chatUnlocked}
+          onOpenSettings={() => setSettingsOpen(true)}
+        />
 
-        <main className="mobile-stage">
-          <MessageList
-            messages={messages}
-            loading={generating}
-            chatUnlocked={chatUnlocked}
-            onOpenSettings={() => setSettingsOpen(true)}
+        <main className="chat-stage">
+          <MessageList messages={messages} loading={generating} />
+          <Composer
+            value={draft}
+            onChange={setDraft}
+            onSend={sendMessage}
+            onStop={stopGeneration}
+            disabled={!chatUnlocked || engineState === 'loading'}
+            generating={generating}
+            placeholder={chatUnlocked ? 'Message Zaya…' : 'Open Offline setup to finish the first download…'}
           />
         </main>
-
-        <Composer
-          value={draft}
-          onChange={setDraft}
-          onSend={sendMessage}
-          disabled={!chatUnlocked || generating}
-          lockedMessage={chatUnlocked ? undefined : 'Open Offline setup to finish the first download…'}
-        />
       </div>
 
       <SettingsSheet
@@ -374,9 +370,9 @@ export default function App() {
         onSelectConversation={setActiveConversationId}
         onCreateConversation={createConversation}
         onDeleteConversation={removeConversation}
-        onClearLocalData={wipeAllLocalData}
+        onClearAllData={wipeAllLocalData}
+        supported={support.supported}
         online={online}
-        isStandalone={isStandalone}
         engineState={engineState}
       />
 
