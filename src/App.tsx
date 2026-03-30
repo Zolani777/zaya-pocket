@@ -112,7 +112,6 @@ export default function App() {
       setSidebarTab(savedConversations.length > 0 ? 'chats' : 'settings');
       setBootstrapped(true);
       await refreshCachedModel(savedModelId);
-      setToast({ id: createId('toast'), tone: 'success', message: 'Zaya Pocket is ready.' });
     } catch (error) {
       setToast({ id: createId('toast'), tone: 'error', message: toReadableError(error) });
     }
@@ -158,19 +157,11 @@ export default function App() {
     return () => window.clearTimeout(timer);
   }, [toast]);
 
-  useEffect(() => {
-    const handleOfflineReady = () => {
-      setToast({ id: createId('toast'), tone: 'success', message: 'Offline shell is cached.' });
-    };
-
-    window.addEventListener('zaya:offline-ready', handleOfflineReady);
-    return () => window.removeEventListener('zaya:offline-ready', handleOfflineReady);
-  }, []);
-
   function handleProgress(progress: InitProgressReport) {
     const numeric = typeof progress.progress === 'number' ? progress.progress : 0;
-    setProgressValue(Math.max(0, Math.min(1, numeric)));
-    setProgressText(progress.text || 'Setting up offline chat…');
+    const clamped = Math.max(0, Math.min(1, numeric));
+    setProgressValue(clamped);
+    setProgressText(formatProgressText(progress.text, clamped));
   }
 
   async function warmupModel() {
@@ -400,10 +391,10 @@ export default function App() {
   }
 
   const composerPlaceholder = !support.supported
-    ? 'This device still needs the right graphics support for local chat.'
+    ? 'This device still needs the right graphics support.'
     : cachedModel || engineState === 'ready'
       ? 'Message Zaya…'
-      : 'Open Offline setup to finish the first download…';
+      : 'Finish offline setup first…';
 
   return (
     <>
@@ -411,8 +402,6 @@ export default function App() {
         <Header
           engineState={engineState}
           cachedModel={cachedModel}
-          panelOpen={panelOpen}
-          onTogglePanel={() => setPanelOpen((current) => !current)}
           onOpenSettings={() => openSidebarTab('settings')}
         />
 
@@ -515,4 +504,27 @@ export default function App() {
 function createTitleFromText(input: string): string {
   const title = input.replace(/\s+/g, ' ').trim().slice(0, 36);
   return title.length < input.trim().length ? `${title}…` : title;
+}
+
+
+function formatProgressText(rawText: string | undefined, progress: number): string {
+  const text = rawText?.trim().toLowerCase() ?? '';
+
+  if (progress >= 0.995) {
+    return 'Offline chat is ready.';
+  }
+
+  if (text.includes('fetch') || text.includes('cache') || text.includes('param') || text.includes('weight') || text.includes('shader')) {
+    return progress > 0.9 ? 'Finalizing offline setup…' : 'Downloading offline brain…';
+  }
+
+  if (text.includes('load') || text.includes('init') || text.includes('warm') || text.includes('prefill') || text.includes('create')) {
+    return 'Preparing local brain…';
+  }
+
+  if (progress > 0) {
+    return progress > 0.9 ? 'Finalizing offline setup…' : 'Setting up offline chat…';
+  }
+
+  return 'Preparing local brain…';
 }

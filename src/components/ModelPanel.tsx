@@ -37,7 +37,7 @@ export function ModelPanel({
       <div>
         <p className="eyebrow">Offline setup</p>
         <h2>Choose your local brain</h2>
-        <p>Starter is the safest first setup. Enhanced is there when you want a heavier upgrade.</p>
+        <p>Starter is the safest first setup. Enhanced stays here when you want the heavier upgrade later.</p>
       </div>
 
       <div className="model-grid" role="radiogroup" aria-label="Available models">

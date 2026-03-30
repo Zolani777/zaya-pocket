@@ -26,7 +26,7 @@ export function Composer({
     if (!element) return;
 
     element.style.height = '0px';
-    element.style.height = `${Math.min(element.scrollHeight, 120)}px`;
+    element.style.height = `${Math.min(element.scrollHeight, 96)}px`;
   }, [value]);
 
   return (
@@ -38,32 +38,30 @@ export function Composer({
 
         <div className="composer__inner card">
           <div className="composer__field-row">
-            <button type="button" className="composer__icon" aria-label="Voice note" disabled={disabled || generating}>
-              ✦
-            </button>
+            <div className="composer__input-shell">
+              <textarea
+                id="zaya-composer"
+                ref={textareaRef}
+                value={value}
+                rows={1}
+                placeholder={placeholder}
+                onChange={(event) => onChange(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === 'Enter' && !event.shiftKey) {
+                    event.preventDefault();
+                    void onSend();
+                  }
+                }}
+                disabled={disabled}
+              />
 
-            <textarea
-              id="zaya-composer"
-              ref={textareaRef}
-              value={value}
-              rows={1}
-              placeholder={placeholder}
-              onChange={(event) => onChange(event.target.value)}
-              onKeyDown={(event) => {
-                if (event.key === 'Enter' && !event.shiftKey) {
-                  event.preventDefault();
-                  void onSend();
-                }
-              }}
-              disabled={disabled}
-            />
-
-            <button type="button" className="composer__icon" aria-label="Record voice" disabled={disabled || generating}>
-              ◉
-            </button>
+              <button type="button" className="composer__icon" aria-label="Record voice" disabled={disabled || generating}>
+                ◉
+              </button>
+            </div>
 
             {generating ? (
-              <button type="button" className="composer__send composer__send--stop" onClick={() => void onStop()}>
+              <button type="button" className="composer__send composer__send--stop" onClick={() => void onStop()} aria-label="Stop generation">
                 ■
               </button>
             ) : (
