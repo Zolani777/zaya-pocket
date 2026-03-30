@@ -24,6 +24,13 @@ interface SettingsSheetProps {
   engineState: EngineState;
 }
 
+function describeState(engineState: EngineState, cachedModel: boolean): string {
+  if (engineState === 'loading') return 'setting up';
+  if (engineState === 'ready') return 'ready';
+  if (engineState === 'error') return 'needs attention';
+  return cachedModel ? 'downloaded' : 'idle';
+}
+
 export function SettingsSheet({
   open,
   onClose,
@@ -63,8 +70,8 @@ export function SettingsSheet({
         <section className="sheet-card sheet-stats">
           <div className="sheet-stat"><span>Network</span><strong>{online ? 'Online' : 'Offline'}</strong></div>
           <div className="sheet-stat"><span>App mode</span><strong>Home Screen app</strong></div>
-          <div className="sheet-stat"><span>Model</span><strong>{cachedModel ? 'Cached' : 'Not cached'}</strong></div>
-          <div className="sheet-stat"><span>State</span><strong>{engineState}</strong></div>
+          <div className="sheet-stat"><span>Model</span><strong>{cachedModel ? 'Downloaded' : 'Not downloaded'}</strong></div>
+          <div className="sheet-stat"><span>State</span><strong>{describeState(engineState, cachedModel)}</strong></div>
           {!supported ? <p className="sheet-warning">This browser is missing some features needed for local AI.</p> : null}
         </section>
 
@@ -78,6 +85,7 @@ export function SettingsSheet({
           cached={cachedModel}
           busy={busy}
           supported={supported}
+          online={online}
           engineState={engineState}
         />
 
