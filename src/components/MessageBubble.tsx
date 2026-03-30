@@ -6,24 +6,15 @@ interface MessageBubbleProps {
 }
 
 export function MessageBubble({ message }: MessageBubbleProps) {
-  return (
-    <article className={`message message--${message.role}`}>
-      {message.role === 'assistant' ? (
-        <div className="message__avatar" aria-hidden="true">
-          <img src="/icons/icon-192.png" alt="" />
-        </div>
-      ) : null}
+  const isAssistant = message.role === 'assistant';
 
-      <div className="message__stack">
-        <div className="message__bubble">
-          <p>{message.content || (message.status === 'streaming' ? '…' : '')}</p>
-        </div>
-        <div className="message__meta">
-          <span>{message.role === 'assistant' ? 'Zaya' : 'You'}</span>
-          <time>{formatClock(message.createdAt)}</time>
-        </div>
-        {message.status === 'error' ? <small className="message__error">Generation failed. Try again.</small> : null}
+  return (
+    <article className={`message-row ${isAssistant ? 'message-row--assistant' : 'message-row--user'}`}>
+      <div className={`message-bubble ${isAssistant ? 'message-bubble--assistant' : 'message-bubble--user'}`}>
+        <p>{message.content || (message.status === 'streaming' ? '…' : '')}</p>
       </div>
+      <time className="message-time">{formatClock(message.createdAt)}</time>
+      {message.status === 'error' ? <small className="message-error">Generation failed. Try again.</small> : null}
     </article>
   );
 }

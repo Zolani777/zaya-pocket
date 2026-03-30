@@ -1,25 +1,20 @@
 export function toReadableError(error: unknown): string {
   if (error instanceof Error) {
     const message = error.message.trim();
-    const normalized = message.toLowerCase();
 
-    if (normalized.includes('response is not ok') || normalized.includes('404') || normalized.includes('failed to fetch')) {
-      return 'The offline brain files could not be reached. Check the connection and try again.';
+    if (/response is not ok/i.test(message)) {
+      return 'The offline model files could not be downloaded. Check your connection and try again.';
     }
 
-    if (normalized.includes('compatible gpu') || normalized.includes('webgpu')) {
-      return 'This browser could not start the local brain here. Open Zaya in Safari over HTTPS or use a device with WebGPU support.';
+    if (/failed to fetch/i.test(message)) {
+      return 'Zaya could not reach the download source just now. Try again in a moment.';
     }
 
-    if (normalized.includes('secure context')) {
-      return 'Offline setup needs a secure connection. Open Zaya from your HTTPS domain or install it to the Home Screen first.';
+    if (/compatible gpu/i.test(message) || /webgpu/i.test(message)) {
+      return 'This device/browser cannot start local AI here yet.';
     }
 
-    if (normalized.includes('not loaded yet')) {
-      return 'Offline chat is not ready yet. Finish setup from Offline setup first.';
-    }
-
-    return message;
+    return message || 'Something went wrong.';
   }
 
   if (typeof error === 'string') {

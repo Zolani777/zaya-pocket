@@ -1,4 +1,3 @@
-import { StatusPill } from '@/components/StatusPill';
 import type { EngineState } from '@/types/chat';
 
 interface HeaderProps {
@@ -7,44 +6,44 @@ interface HeaderProps {
   onOpenSettings: () => void;
 }
 
-function getAppStateLabel(engineState: EngineState, cachedModel: boolean): { label: string; tone: 'default' | 'success' | 'warning' | 'danger' } {
-  if (engineState === 'loading') {
-    return { label: 'setting up', tone: 'warning' };
-  }
+function getStatusLabel(engineState: EngineState, cachedModel: boolean): string {
+  if (engineState === 'loading') return 'setting up';
+  if (engineState === 'ready' && cachedModel) return 'ready';
+  if (engineState === 'error') return 'needs attention';
+  if (cachedModel) return 'ready';
+  return 'setup needed';
+}
 
-  if (engineState === 'ready') {
-    return { label: 'local ready', tone: 'success' };
-  }
-
-  if (engineState === 'error') {
-    return { label: 'needs attention', tone: 'danger' };
-  }
-
-  if (cachedModel) {
-    return { label: 'downloaded', tone: 'success' };
-  }
-
-  return { label: 'setup needed', tone: 'default' };
+function getStatusTone(engineState: EngineState, cachedModel: boolean): 'default' | 'success' | 'warning' | 'danger' {
+  if (engineState === 'loading') return 'warning';
+  if (engineState === 'ready' && cachedModel) return 'success';
+  if (engineState === 'error') return 'danger';
+  if (cachedModel) return 'success';
+  return 'default';
 }
 
 export function Header({ engineState, cachedModel, onOpenSettings }: HeaderProps) {
-  const appState = getAppStateLabel(engineState, cachedModel);
+  const label = getStatusLabel(engineState, cachedModel);
+  const tone = getStatusTone(engineState, cachedModel);
 
   return (
-    <header className="appbar">
-      <div className="appbar__group appbar__group--brand">
-        <div className="brand brand--compact">
-          <img className="brand__logo brand__logo--compact" src="/icons/icon-192.png" alt="Zaya Pocket logo" />
-          <div className="brand__text">
-            <p className="eyebrow">Zaya Pocket</p>
-            <h1>Zaya Pocket</h1>
-          </div>
+    <header className="header-bar" aria-label="Zaya Pocket header">
+      <div className="header-bar__brand">
+        <img className="header-bar__logo" src="/icons/icon-192.png" alt="Zaya Pocket" />
+        <div className="header-bar__copy">
+          <p className="eyebrow">Zaya Pocket</p>
+          <h1>Zaya Pocket</h1>
         </div>
       </div>
 
-      <div className="appbar__group appbar__group--end" aria-live="polite">
-        <StatusPill label={appState.label} tone={appState.tone} />
-        <button type="button" className="icon-button" onClick={onOpenSettings} aria-label="Open settings and offline setup">
+      <div className="header-bar__actions">
+        <span className={`header-status header-status--${tone}`}>{label}</span>
+        <button
+          type="button"
+          className="header-icon-button"
+          aria-label="Open settings"
+          onClick={onOpenSettings}
+        >
           ⚙
         </button>
       </div>
