@@ -39,7 +39,11 @@ export function toReadableError(error: unknown): string {
   const normalized = message.toLowerCase();
 
   if (normalized === '[object object]') {
-    return 'Offline setup failed after download started. Try the download again.';
+    return 'Offline setup failed while starting the local model. Try loading it again.';
+  }
+
+  if (normalized.includes('another offline setup is already running')) {
+    return 'Offline setup is already running. Wait for it to finish.';
   }
 
   if (normalized.includes('response is not ok') || normalized.includes('failed to fetch') || normalized.includes('networkerror')) {
@@ -55,7 +59,11 @@ export function toReadableError(error: unknown): string {
   }
 
   if (normalized.includes('abort')) {
-    return 'The offline setup was interrupted before it finished.';
+    return 'Generation was stopped before the reply finished.';
+  }
+
+  if (normalized.includes('not loaded yet')) {
+    return 'The offline model is still loading. Wait a moment and try again.';
   }
 
   if (normalized.includes('404') || normalized.includes('not found')) {

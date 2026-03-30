@@ -26,11 +26,11 @@ export function ModelPanel({
   supported,
   engineState,
 }: ModelPanelProps) {
-  const buttonLabel = cached
-    ? engineState === 'ready'
-      ? 'Model is ready'
-      : 'Load downloaded model'
-    : 'Download offline model';
+  const buttonLabel = engineState === 'ready'
+    ? 'Offline model is ready'
+    : cached
+      ? 'Load downloaded model'
+      : 'Download offline model';
 
   return (
     <section className="sheet-card stack-md">
@@ -48,15 +48,17 @@ export function ModelPanel({
               key={model.id}
               type="button"
               className={`sheet-model ${selected ? 'sheet-model--selected' : ''}`}
-              onClick={() => onSelect(model.id)}
+              onClick={() => {
+                if (!busy) onSelect(model.id);
+              }}
               disabled={busy}
             >
               <div className="sheet-model__topline">
-                <strong>{model.recommended ? 'Starter' : 'Enhanced'}</strong>
-                <span>{model.name}</span>
+                <strong>{model.name}</strong>
+                <span>{model.sizeLabel}</span>
               </div>
-              <p>{model.recommended ? 'Best first setup for most phones.' : 'Sharper replies, but heavier.'}</p>
-              <small>{model.recommended ? 'About 1 GB download' : 'About 2.3 GB download'}</small>
+              <p>{model.description}</p>
+              <small>{model.memoryLabel}</small>
             </button>
           );
         })}
@@ -73,7 +75,7 @@ export function ModelPanel({
       </div>
 
       <div className="button-row">
-        <button className="button" type="button" onClick={() => void onWarmup()} disabled={busy || !supported}>
+        <button className="button" type="button" onClick={() => void onWarmup()} disabled={busy || !supported || engineState === 'ready'}>
           {buttonLabel}
         </button>
         <button className="button button--ghost" type="button" onClick={() => void onDeleteCache()} disabled={busy || !cached}>

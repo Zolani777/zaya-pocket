@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { ChatCompletionMessageParam, InitProgressReport } from '@mlc-ai/web-llm';
 import { Header } from '@/components/Header';
 import { SettingsSheet } from '@/components/SettingsSheet';
@@ -58,6 +58,8 @@ export default function App() {
   const [generating, setGenerating] = useState(false);
   const [bootstrapped, setBootstrapped] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const warmupPromiseRef = useRef<Promise<void> | null>(null);
+  const autoLoadAttemptRef = useRef<string>('');
 
   const refreshCachedModel = useCallback(async (modelId = selectedModelId) => {
     try {
@@ -89,6 +91,7 @@ export default function App() {
 
       setSelectedModelId(savedModelId);
       setConversations(savedConversations);
+      setEngineState('idle');
       setActiveConversationId(savedConversationId || savedConversations[0]?.id || '');
       setBootstrapped(true);
       await refreshCachedModel(savedModelId);
@@ -108,6 +111,10 @@ export default function App() {
     if (!bootstrapped) return;
     void refreshCachedModel();
     void saveSetting(SELECTED_MODEL_KEY, selectedModelId);
+
+    if (zayaEngine.getActiveModelId() !== selectedModelId) {
+      setEngineState('idle');
+    }
   }, [selectedModelId, bootstrapped, refreshCachedModel]);
 
   useEffect(() => {
@@ -118,6 +125,25 @@ export default function App() {
     void loadMessages(activeConversationId);
     void saveSetting(ACTIVE_CONVERSATION_KEY, activeConversationId);
   }, [activeConversationId, loadMessages]);
+
+  useEffect(() => {
+    if (!bootstrapped || !support.supported) return;
+
+    if (!cachedModel) {
+      autoLoadAttemptRef.current = '';
+      if (engineState !== 'loading' && zayaEngine.getActiveModelId() !== selectedModelId) {
+        setEngineState('idle');
+      }
+      return;
+    }
+
+    if (engineState === 'ready' && zayaEngine.getActiveModelId() === selectedModelId) return;
+    if (engineState === 'loading') return;
+    if (autoLoadAttemptRef.current === selectedModelId) return;
+
+    autoLoadAttemptRef.current = selectedModelId;
+    void warmupModel({ auto: true });
+  }, [bootstrapped, cachedModel, engineState, selectedModelId, support.supported]);
 
   useEffect(() => {
     if (!toast) return;
@@ -143,40 +169,61 @@ export default function App() {
     return created;
   }
 
-  async function warmupModel() {
-    if (engineState === 'loading') return;
-
-    if (!support.supported) {
-      setToast({ id: createId('toast'), tone: 'error', message: 'This browser is missing the features needed for local AI.' });
-      return;
+  async function warmupModel(options: { auto?: boolean } = {}) {
+    if (warmupPromiseRef.current) {
+      return warmupPromiseRef.current;
     }
 
-    if (!online && !(await refreshCachedModel())) {
-      setEngineState('error');
-      setProgressText('You need an internet connection for the first offline model download.');
-      setToast({ id: createId('toast'), tone: 'error', message: 'Connect to the internet once to download the offline model.' });
-      return;
-    }
-
-    try {
-      setEngineState('loading');
-      setProgressValue(0);
-      setProgressText('Downloading offline model…');
-      await zayaEngine.boot(selectedModelId, handleProgress);
-      setEngineState('ready');
+    if (engineState === 'ready' && zayaEngine.getActiveModelId() === selectedModelId) {
       setProgressValue(1);
       setProgressText('Offline model is ready on this device.');
-      await refreshCachedModel();
-      await ensureConversation();
-      setSettingsOpen(false);
-      setToast({ id: createId('toast'), tone: 'success', message: 'Offline setup finished.' });
-    } catch (error) {
-      console.error('Zaya offline setup failed', error);
-      setEngineState('error');
-      setProgressValue(0);
-      setProgressText('Offline setup failed. Try the download again.');
-      setToast({ id: createId('toast'), tone: 'error', message: toReadableError(error) });
+      return;
     }
+
+    const run = (async () => {
+      if (!support.supported) {
+        setToast({ id: createId('toast'), tone: 'error', message: 'This browser is missing the features needed for local AI.' });
+        return;
+      }
+
+      const cached = await refreshCachedModel(selectedModelId);
+
+      if (!online && !cached) {
+        setEngineState('error');
+        setProgressText('You need an internet connection for the first offline model download.');
+        setToast({ id: createId('toast'), tone: 'error', message: 'Connect to the internet once to download the offline model.' });
+        return;
+      }
+
+      try {
+        setEngineState('loading');
+        setProgressValue(cached ? 0.02 : 0);
+        setProgressText(cached ? 'Loading downloaded model…' : 'Downloading offline model…');
+        await zayaEngine.boot(selectedModelId, handleProgress);
+        setEngineState('ready');
+        setProgressValue(1);
+        setProgressText('Offline model is ready on this device.');
+        await refreshCachedModel();
+        await ensureConversation();
+        autoLoadAttemptRef.current = selectedModelId;
+        if (!options.auto) {
+          setSettingsOpen(false);
+          setToast({ id: createId('toast'), tone: 'success', message: 'Offline setup finished.' });
+        }
+      } catch (error) {
+        console.error('Zaya offline setup failed', error);
+        setEngineState('error');
+        setProgressValue(0);
+        setProgressText('Offline setup failed. Try the download again.');
+        setToast({ id: createId('toast'), tone: 'error', message: toReadableError(error) });
+      }
+    })();
+
+    warmupPromiseRef.current = run.finally(() => {
+      warmupPromiseRef.current = null;
+    });
+
+    return warmupPromiseRef.current;
   }
 
   async function deleteModelCache() {
@@ -225,14 +272,17 @@ export default function App() {
     if (!userText || generating || !chatUnlocked) return;
 
     try {
-      setGenerating(true);
-      setDraft('');
-
-      const conversation = await ensureConversation();
-
-      if (!zayaEngine.isReady()) {
+      if (!zayaEngine.isReady() || engineState !== 'ready') {
         await warmupModel();
       }
+
+      if (!zayaEngine.isReady() || engineState !== 'ready') {
+        throw new Error('The offline model is still loading. Wait a moment and try again.');
+      }
+
+      setGenerating(true);
+      setDraft('');
+      const conversation = await ensureConversation();
 
       const now = new Date().toISOString();
       const userMessage: ChatMessage = {
@@ -256,9 +306,10 @@ export default function App() {
       setMessages((current) => [...current, userMessage, assistantMessage]);
       await saveMessages([userMessage, assistantMessage]);
 
+      const priorCompleteMessages = messages.filter((message) => message.status !== 'error' && message.content.trim());
       const promptMessages: ChatCompletionMessageParam[] = [
         { role: 'system', content: buildSystemPrompt() },
-        ...messages.map((message) => ({ role: message.role, content: message.content })),
+        ...priorCompleteMessages.map((message) => ({ role: message.role, content: message.content })),
         { role: 'user', content: userText },
       ];
 
@@ -277,7 +328,7 @@ export default function App() {
 
       const finalAssistant: ChatMessage = {
         ...assistantMessage,
-        content: streamedContent.trim() || 'No reply was produced.',
+        content: streamedContent.trim() || 'I am ready locally, but I did not produce a reply. Please try again.',
         status: 'complete',
       };
 
@@ -338,13 +389,14 @@ export default function App() {
       setProgressValue(0);
       setProgressText('Offline setup has not been started yet.');
       setCachedModel(false);
+      autoLoadAttemptRef.current = '';
       setSettingsOpen(false);
     } catch (error) {
       setToast({ id: createId('toast'), tone: 'error', message: toReadableError(error) });
     }
   }
 
-  const chatUnlocked = support.supported && (cachedModel || engineState === 'ready');
+  const chatUnlocked = support.supported && engineState === 'ready';
 
   return (
     <>
@@ -362,7 +414,7 @@ export default function App() {
             onChange={setDraft}
             onSend={sendMessage}
             onStop={stopGeneration}
-            disabled={!chatUnlocked || engineState === 'loading'}
+            disabled={!chatUnlocked || generating}
             generating={generating}
             placeholder={chatUnlocked ? 'Message Zaya…' : 'Open Offline setup to finish the first download…'}
           />

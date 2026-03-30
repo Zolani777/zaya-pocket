@@ -2,48 +2,47 @@ import type {
   AppConfig,
   ChatCompletionMessageParam,
   InitProgressReport,
-  MLCEngineInterface,
   ModelRecord,
+  WebWorkerMLCEngine,
 } from '@mlc-ai/web-llm';
+import { DEFAULT_MODEL_ID, MODEL_OPTIONS } from '@/constants/models';
 
-type WebLLMModule = typeof import('@mlc-ai/web-llm');
-
-const ALLOWED_MODEL_IDS = new Set([
-  'Llama-3.2-1B-Instruct-q4f16_1-MLC',
-  'Llama-3.2-3B-Instruct-q4f16_1-MLC',
-]);
+const ALLOWED_MODEL_IDS = new Set(MODEL_OPTIONS.map((model) => model.id));
 
 class ZayaEngine {
+  private engine: WebWorkerMLCEngine | null = null;
   private worker: Worker | null = null;
-  private engine: MLCEngineInterface | null = null;
   private activeModelId: string | null = null;
-  private webllm: WebLLMModule | null = null;
   private bootPromise: Promise<void> | null = null;
   private bootModelId: string | null = null;
+  private webllmModulePromise: Promise<typeof import('@mlc-ai/web-llm')> | null = null;
   private appConfig: AppConfig | null = null;
 
-  private async getWebLLM(): Promise<WebLLMModule> {
-    if (!this.webllm) {
-      this.webllm = await import('@mlc-ai/web-llm');
+  private getWebLLM() {
+    if (!this.webllmModulePromise) {
+      this.webllmModulePromise = import('@mlc-ai/web-llm');
     }
+    return this.webllmModulePromise;
+  }
 
-    return this.webllm;
+  getActiveModelId(): string | null {
+    return this.activeModelId;
   }
 
   private async getAppConfig(): Promise<AppConfig> {
     if (this.appConfig) return this.appConfig;
 
     const { prebuiltAppConfig } = await this.getWebLLM();
-    const model_list = prebuiltAppConfig.model_list.filter((record) => ALLOWED_MODEL_IDS.has(record.model_id));
+    const model_list = prebuiltAppConfig.model_list.filter((entry) => ALLOWED_MODEL_IDS.has(entry.model_id));
+    const found = model_list.map((entry) => entry.model_id);
 
-    if (model_list.length !== ALLOWED_MODEL_IDS.size) {
-      const found = model_list.map((record) => record.model_id).join(', ');
-      throw new Error(`Could not find the required offline model records. Found: ${found || 'none'}.`);
+    if (!ALLOWED_MODEL_IDS.has(DEFAULT_MODEL_ID) || model_list.length !== ALLOWED_MODEL_IDS.size) {
+      throw new Error(`Could not find the required offline model records. Found: ${found.join(', ') || 'none'}.`);
     }
 
     this.appConfig = {
       model_list: model_list as ModelRecord[],
-      useIndexedDBCache: false,
+      useIndexedDBCache: true,
     };
 
     return this.appConfig;
@@ -62,14 +61,17 @@ class ZayaEngine {
   private wrapProgress(modelId: string, onProgress?: (progress: InitProgressReport) => void) {
     return (progress: InitProgressReport) => {
       const numeric = typeof progress.progress === 'number' ? Math.max(0, Math.min(1, progress.progress)) : 0;
+      const source = (progress.text || '').trim().toLowerCase();
       let text = progress.text?.trim() || '';
 
       if (!text) {
-        text = numeric >= 1 ? 'Initializing offline model…' : 'Downloading offline model…';
-      } else if (/fetching|cache\[|loading model from cache/i.test(text)) {
-        text = numeric >= 1 ? 'Initializing offline model…' : 'Downloading offline model…';
-      } else if (/initializ|creating|instantiating|warm/i.test(text)) {
-        text = 'Initializing offline model…';
+        text = numeric >= 1 ? 'Offline model is ready.' : 'Downloading offline model…';
+      } else if (/fetching|downloading|param cache|cache\[|ndarray|tokenizer|params/i.test(source)) {
+        text = 'Downloading offline model…';
+      } else if (/loading.*cache|from cache|cached/i.test(source)) {
+        text = 'Loading downloaded model…';
+      } else if (/initial|creating|instantiating|warm|shader|webgpu|pipeline|prefill/i.test(source)) {
+        text = 'Initializing local engine…';
       }
 
       onProgress?.({ ...progress, progress: numeric, text });
@@ -89,6 +91,11 @@ class ZayaEngine {
         return this.bootPromise;
       }
       throw new Error('Another offline setup is already running. Wait for it to finish first.');
+    }
+
+    if (this.engine && this.activeModelId === modelId) {
+      onProgress?.({ progress: 1, timeElapsed: 0, text: 'Offline model is ready.' });
+      return;
     }
 
     const run = async () => {
@@ -111,7 +118,7 @@ class ZayaEngine {
         this.engine.setInitProgressCallback(progressCallback);
 
         if (this.activeModelId !== modelId) {
-          progressCallback({ progress: 0.98, timeElapsed: 0, text: 'Initializing offline model…' });
+          progressCallback({ progress: 0.98, timeElapsed: 0, text: 'Initializing local engine…' });
           await this.engine.reload(modelId);
           this.activeModelId = modelId;
         }
@@ -133,7 +140,7 @@ class ZayaEngine {
   }
 
   isReady(): boolean {
-    return Boolean(this.engine);
+    return Boolean(this.engine && this.activeModelId);
   }
 
   async isModelCached(modelId: string): Promise<boolean> {
@@ -190,14 +197,24 @@ class ZayaEngine {
     for await (const chunk of stream) {
       const delta = chunk.choices[0]?.delta?.content;
       const token = this.normalizeDelta(delta);
-
       if (!token) continue;
-
       finalText += token;
       onToken(token);
     }
 
-    return finalText.trim();
+    if (finalText.trim()) {
+      return finalText.trim();
+    }
+
+    const completion = await this.engine.chat.completions.create({
+      messages,
+      stream: false,
+      temperature: 0.7,
+      top_p: 0.95,
+    });
+
+    const fallback = this.normalizeDelta(completion.choices?.[0]?.message?.content);
+    return fallback.trim();
   }
 
   private normalizeDelta(delta: unknown): string {
@@ -207,14 +224,15 @@ class ZayaEngine {
 
     if (Array.isArray(delta)) {
       return delta
-        .map((item) => {
-          if (typeof item === 'string') return item;
-          if (item && typeof item === 'object' && 'text' in item) {
-            return String((item as { text: string }).text ?? '');
-          }
-          return '';
-        })
+        .map((item) => this.normalizeDelta(item))
         .join('');
+    }
+
+    if (delta && typeof delta === 'object') {
+      const record = delta as Record<string, unknown>;
+      if (typeof record.text === 'string') return record.text;
+      if (typeof record.content === 'string') return record.content;
+      if (Array.isArray(record.content)) return this.normalizeDelta(record.content);
     }
 
     return '';
