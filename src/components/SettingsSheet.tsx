@@ -5,6 +5,7 @@ import type { ConversationRecord, EngineState } from '@/types/chat';
 interface SettingsSheetProps {
   open: boolean;
   onClose: () => void;
+  canClose: boolean;
   selectedModelId: string;
   onSelectModel: (modelId: string) => void;
   onWarmup: () => void | Promise<void>;
@@ -12,6 +13,7 @@ interface SettingsSheetProps {
   progressText: string;
   progressValue: number;
   cachedModel: boolean;
+  engineReady: boolean;
   busy: boolean;
   conversations: ConversationRecord[];
   activeConversationId: string;
@@ -24,16 +26,26 @@ interface SettingsSheetProps {
   engineState: EngineState;
 }
 
-function describeState(engineState: EngineState, cachedModel: boolean): string {
-  if (engineState === 'loading') return 'setting up';
-  if (engineState === 'ready') return 'ready';
+function describeState(engineState: EngineState, cachedModel: boolean, engineReady: boolean): string {
+  if (engineState === 'downloading') return 'downloading';
+  if (engineState === 'verifying') return 'verifying';
+  if (engineState === 'loading') return 'loading';
+  if (engineState === 'initializing') return 'initializing';
+  if (engineState === 'generating') return 'replying';
   if (engineState === 'error') return 'needs attention';
+  if (engineReady || engineState === 'ready') return 'ready';
   return cachedModel ? 'downloaded' : 'idle';
+}
+
+function describeModel(engineReady: boolean, cachedModel: boolean): string {
+  if (engineReady) return 'Loaded';
+  return cachedModel ? 'Downloaded' : 'Not downloaded';
 }
 
 export function SettingsSheet({
   open,
   onClose,
+  canClose,
   selectedModelId,
   onSelectModel,
   onWarmup,
@@ -41,6 +53,7 @@ export function SettingsSheet({
   progressText,
   progressValue,
   cachedModel,
+  engineReady,
   busy,
   conversations,
   activeConversationId,
@@ -62,7 +75,13 @@ export function SettingsSheet({
             <p className="eyebrow">Settings</p>
             <h2>Offline setup</h2>
           </div>
-          <button className="icon-button" type="button" onClick={onClose} aria-label="Close settings">
+          <button
+            className="icon-button"
+            type="button"
+            onClick={onClose}
+            aria-label="Close settings"
+            disabled={!canClose}
+          >
             ×
           </button>
         </div>
@@ -70,8 +89,8 @@ export function SettingsSheet({
         <section className="sheet-card sheet-stats">
           <div className="sheet-stat"><span>Network</span><strong>{online ? 'Online' : 'Offline'}</strong></div>
           <div className="sheet-stat"><span>App mode</span><strong>Home Screen app</strong></div>
-          <div className="sheet-stat"><span>Model</span><strong>{cachedModel ? 'Downloaded' : 'Not downloaded'}</strong></div>
-          <div className="sheet-stat"><span>State</span><strong>{describeState(engineState, cachedModel)}</strong></div>
+          <div className="sheet-stat"><span>Model</span><strong>{describeModel(engineReady, cachedModel)}</strong></div>
+          <div className="sheet-stat"><span>State</span><strong>{describeState(engineState, cachedModel, engineReady)}</strong></div>
           {!supported ? <p className="sheet-warning">This browser is missing some features needed for local AI.</p> : null}
         </section>
 
@@ -111,7 +130,7 @@ export function SettingsSheet({
             <h2>Local data</h2>
             <p>Clear chats and setup on this device whenever you need a clean restart.</p>
           </div>
-          <button className="button button--ghost" type="button" onClick={() => void onClearAllData()}>
+          <button className="button button--ghost" type="button" onClick={() => void onClearAllData()} disabled={busy}>
             Clear local data
           </button>
         </section>

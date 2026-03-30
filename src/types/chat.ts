@@ -1,6 +1,14 @@
 export type StoredRole = 'user' | 'assistant';
-export type EngineState = 'idle' | 'loading' | 'ready' | 'error';
+export type EngineState = 'idle' | 'downloading' | 'verifying' | 'loading' | 'initializing' | 'ready' | 'generating' | 'error';
 export type MessageStatus = 'complete' | 'streaming' | 'error';
+export type SetupPhase = Extract<EngineState, 'downloading' | 'verifying' | 'loading' | 'initializing' | 'ready'>;
+
+export interface EngineBootProgress {
+  phase: SetupPhase;
+  progress: number;
+  text: string;
+  rawText?: string;
+}
 
 export interface ChatMessage {
   id: string;

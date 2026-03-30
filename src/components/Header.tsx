@@ -1,10 +1,11 @@
 interface HeaderProps {
   online: boolean;
   chatUnlocked: boolean;
+  statusLabel: string;
   onOpenSettings: () => void;
 }
 
-export function Header({ online, chatUnlocked, onOpenSettings }: HeaderProps) {
+export function Header({ online, chatUnlocked, statusLabel, onOpenSettings }: HeaderProps) {
   return (
     <header className="mobile-header glass-panel">
       <div className="mobile-header__brand">
@@ -15,8 +16,8 @@ export function Header({ online, chatUnlocked, onOpenSettings }: HeaderProps) {
         </div>
       </div>
 
-      <div className={`status-pill ${chatUnlocked ? 'status-pill--ready' : online ? '' : 'status-pill--offline'}`}>
-        {chatUnlocked ? 'ready' : online ? 'setup needed' : 'offline'}
+      <div className={`status-pill ${chatUnlocked ? 'status-pill--ready' : !online ? 'status-pill--offline' : ''}`}>
+        {statusLabel}
       </div>
 
       <button className="icon-button" type="button" aria-label="Open settings" onClick={onOpenSettings}>

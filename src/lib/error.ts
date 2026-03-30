@@ -11,6 +11,14 @@ function extractMessage(value: unknown): string | null {
     return value.name?.trim() || null;
   }
 
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      const nested = extractMessage(item);
+      if (nested) return nested;
+    }
+    return null;
+  }
+
   if (typeof value === 'object') {
     const record = value as Record<string, unknown>;
 
@@ -19,13 +27,18 @@ function extractMessage(value: unknown): string | null {
       extractMessage(record.reason) ??
       extractMessage(record.error) ??
       extractMessage(record.details) ??
-      extractMessage(record.cause);
+      extractMessage(record.cause) ??
+      extractMessage(record.description);
 
     if (direct) return direct;
 
+    if (typeof record.name === 'string' && record.name.trim()) {
+      return record.name.trim();
+    }
+
     try {
       const json = JSON.stringify(value);
-      if (json && json !== '{}' && json !== '[]') return json;
+      if (json && json !== '{}' && json !== '[]' && json !== '"[object Object]"') return json;
     } catch {
       // ignore
     }
@@ -54,16 +67,27 @@ export function toReadableError(error: unknown): string {
     return 'This device does not have enough free storage for the offline model.';
   }
 
-  if (normalized.includes('compatible gpu') || normalized.includes('webgpu') || normalized.includes('adapter')) {
-    return 'This phone could not finish starting the local AI model.';
+  if (
+    normalized.includes('compatible gpu') ||
+    normalized.includes('webgpu') ||
+    normalized.includes('adapter') ||
+    normalized.includes('shader-f16') ||
+    normalized.includes('device was lost') ||
+    normalized.includes('device lost')
+  ) {
+    return 'This phone could not keep the local AI engine running. Reopen the app and use the Starter model.';
   }
 
   if (normalized.includes('abort')) {
     return 'Generation was stopped before the reply finished.';
   }
 
-  if (normalized.includes('not loaded yet')) {
+  if (normalized.includes('not loaded yet') || normalized.includes('still loading')) {
     return 'The offline model is still loading. Wait a moment and try again.';
+  }
+
+  if (normalized.includes('empty reply')) {
+    return 'The local model returned an empty reply. Send the message again.';
   }
 
   if (normalized.includes('404') || normalized.includes('not found')) {

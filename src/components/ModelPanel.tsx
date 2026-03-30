@@ -14,6 +14,15 @@ interface ModelPanelProps {
   engineState: EngineState;
 }
 
+function getButtonLabel(engineState: EngineState, cached: boolean): string {
+  if (engineState === 'downloading') return 'Downloading…';
+  if (engineState === 'verifying') return 'Verifying…';
+  if (engineState === 'loading') return 'Loading cached model…';
+  if (engineState === 'initializing') return 'Initializing…';
+  if (engineState === 'ready' || engineState === 'generating') return 'Offline model is ready';
+  return cached ? 'Load downloaded model' : 'Download offline model';
+}
+
 export function ModelPanel({
   selectedModelId,
   onSelect,
@@ -26,11 +35,7 @@ export function ModelPanel({
   supported,
   engineState,
 }: ModelPanelProps) {
-  const buttonLabel = engineState === 'ready'
-    ? 'Offline model is ready'
-    : cached
-      ? 'Load downloaded model'
-      : 'Download offline model';
+  const buttonLabel = getButtonLabel(engineState, cached);
 
   return (
     <section className="sheet-card stack-md">
@@ -75,7 +80,7 @@ export function ModelPanel({
       </div>
 
       <div className="button-row">
-        <button className="button" type="button" onClick={() => void onWarmup()} disabled={busy || !supported || engineState === 'ready'}>
+        <button className="button" type="button" onClick={() => void onWarmup()} disabled={busy || !supported || engineState === 'ready' || engineState === 'generating'}>
           {buttonLabel}
         </button>
         <button className="button button--ghost" type="button" onClick={() => void onDeleteCache()} disabled={busy || !cached}>

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import type { ChatCompletionMessageParam, InitProgressReport } from '@mlc-ai/web-llm';
+import type { ChatCompletionMessageParam } from '@mlc-ai/web-llm';
 import { Header } from '@/components/Header';
 import { SettingsSheet } from '@/components/SettingsSheet';
 import { MessageList } from '@/components/MessageList';
@@ -17,17 +17,58 @@ import {
   listMessages,
   saveConversation,
   saveMessage,
-  saveMessages,
   saveSetting,
 } from '@/lib/db';
 import { toReadableError } from '@/lib/error';
 import { useOnlineStatus } from '@/hooks/useOnlineStatus';
 import { zayaEngine } from '@/services/engine';
-import type { ChatMessage, ConversationRecord, EngineState, ToastState } from '@/types/chat';
+import type {
+  ChatMessage,
+  ConversationRecord,
+  EngineBootProgress,
+  EngineState,
+  SetupPhase,
+  ToastState,
+} from '@/types/chat';
 import './styles.css';
 
 const ACTIVE_CONVERSATION_KEY = 'activeConversationId';
 const SELECTED_MODEL_KEY = 'selectedModelId';
+
+const PHASE_PROGRESS: Record<SetupPhase, [number, number]> = {
+  downloading: [0, 0.72],
+  verifying: [0.72, 0.8],
+  loading: [0.8, 0.9],
+  initializing: [0.9, 0.98],
+  ready: [1, 1],
+};
+
+function clampProgress(value: number): number {
+  if (Number.isNaN(value)) return 0;
+  return Math.max(0, Math.min(1, value));
+}
+
+function mapPhaseProgress(phase: SetupPhase, progress: number): number {
+  const [start, end] = PHASE_PROGRESS[phase];
+  if (phase === 'ready') return 1;
+  return start + (end - start) * clampProgress(progress);
+}
+
+function isSetupState(state: EngineState): boolean {
+  return state === 'downloading' || state === 'verifying' || state === 'loading' || state === 'initializing';
+}
+
+function isBusyState(state: EngineState): boolean {
+  return isSetupState(state) || state === 'generating';
+}
+
+function getHeaderStatusLabel(engineState: EngineState, online: boolean, chatUnlocked: boolean): string {
+  if (chatUnlocked) return 'ready';
+  if (!online && engineState === 'idle') return 'offline';
+  if (engineState === 'error') return 'needs attention';
+  if (isSetupState(engineState)) return 'setting up';
+  return 'setup needed';
+}
 
 function createConversationRecord(modelId: string): ConversationRecord {
   const now = new Date().toISOString();
@@ -46,6 +87,7 @@ export default function App() {
   const online = useOnlineStatus();
 
   const [engineState, setEngineState] = useState<EngineState>('idle');
+  const [engineReady, setEngineReady] = useState(false);
   const [conversations, setConversations] = useState<ConversationRecord[]>([]);
   const [activeConversationId, setActiveConversationId] = useState('');
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -58,19 +100,50 @@ export default function App() {
   const [generating, setGenerating] = useState(false);
   const [bootstrapped, setBootstrapped] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+
+  const selectedModelIdRef = useRef(selectedModelId);
+  const conversationsRef = useRef(conversations);
+  const activeConversationIdRef = useRef(activeConversationId);
+  const messagesRef = useRef(messages);
+  const generatingRef = useRef(generating);
   const warmupPromiseRef = useRef<Promise<void> | null>(null);
+  const warmupModelIdRef = useRef<string | null>(null);
   const autoLoadAttemptRef = useRef<string>('');
 
-  const refreshCachedModel = useCallback(async (modelId = selectedModelId) => {
+  useEffect(() => {
+    selectedModelIdRef.current = selectedModelId;
+  }, [selectedModelId]);
+
+  useEffect(() => {
+    conversationsRef.current = conversations;
+  }, [conversations]);
+
+  useEffect(() => {
+    activeConversationIdRef.current = activeConversationId;
+  }, [activeConversationId]);
+
+  useEffect(() => {
+    messagesRef.current = messages;
+  }, [messages]);
+
+  useEffect(() => {
+    generatingRef.current = generating;
+  }, [generating]);
+
+  const refreshCachedModel = useCallback(async (modelId: string) => {
     try {
       const cached = await zayaEngine.isModelCached(modelId);
-      setCachedModel(cached);
+      if (selectedModelIdRef.current === modelId) {
+        setCachedModel(cached);
+      }
       return cached;
     } catch {
-      setCachedModel(false);
+      if (selectedModelIdRef.current === modelId) {
+        setCachedModel(false);
+      }
       return false;
     }
-  }, [selectedModelId]);
+  }, []);
 
   const loadMessages = useCallback(async (conversationId: string) => {
     try {
@@ -81,100 +154,37 @@ export default function App() {
     }
   }, []);
 
-  const bootstrap = useCallback(async () => {
-    try {
-      const [savedModelId, savedConversationId, savedConversations] = await Promise.all([
-        getSetting(SELECTED_MODEL_KEY, DEFAULT_MODEL_ID),
-        getSetting(ACTIVE_CONVERSATION_KEY, ''),
-        listConversations(),
-      ]);
-
-      setSelectedModelId(savedModelId);
-      setConversations(savedConversations);
-      setEngineState('idle');
-      setActiveConversationId(savedConversationId || savedConversations[0]?.id || '');
-      setBootstrapped(true);
-      await refreshCachedModel(savedModelId);
-    } catch (error) {
-      setToast({ id: createId('toast'), tone: 'error', message: toReadableError(error) });
-    }
-  }, [refreshCachedModel]);
-
-  useEffect(() => {
-    void bootstrap();
-    return () => {
-      void zayaEngine.unload();
-    };
-  }, [bootstrap]);
-
-  useEffect(() => {
-    if (!bootstrapped) return;
-    void refreshCachedModel();
-    void saveSetting(SELECTED_MODEL_KEY, selectedModelId);
-
-    if (zayaEngine.getActiveModelId() !== selectedModelId) {
-      setEngineState('idle');
-    }
-  }, [selectedModelId, bootstrapped, refreshCachedModel]);
-
-  useEffect(() => {
-    if (!activeConversationId) {
-      setMessages([]);
-      return;
-    }
-    void loadMessages(activeConversationId);
-    void saveSetting(ACTIVE_CONVERSATION_KEY, activeConversationId);
-  }, [activeConversationId, loadMessages]);
-
-  useEffect(() => {
-    if (!bootstrapped || !support.supported) return;
-
-    if (!cachedModel) {
-      autoLoadAttemptRef.current = '';
-      if (engineState !== 'loading' && zayaEngine.getActiveModelId() !== selectedModelId) {
-        setEngineState('idle');
-      }
-      return;
-    }
-
-    if (engineState === 'ready' && zayaEngine.getActiveModelId() === selectedModelId) return;
-    if (engineState === 'loading') return;
-    if (autoLoadAttemptRef.current === selectedModelId) return;
-
-    autoLoadAttemptRef.current = selectedModelId;
-    void warmupModel({ auto: true });
-  }, [bootstrapped, cachedModel, engineState, selectedModelId, support.supported]);
-
-  useEffect(() => {
-    if (!toast) return;
-    const timer = window.setTimeout(() => setToast(null), 2800);
-    return () => window.clearTimeout(timer);
-  }, [toast]);
-
-  function handleProgress(progress: InitProgressReport) {
-    const numeric = typeof progress.progress === 'number' ? progress.progress : 0;
-    setProgressValue(Math.max(0, Math.min(1, numeric)));
-    setProgressText(progress.text || (numeric >= 1 ? 'Initializing offline model…' : 'Downloading offline model…'));
-  }
-
-  async function ensureConversation(): Promise<ConversationRecord> {
-    const existing = conversations.find((item) => item.id === activeConversationId);
+  const ensureConversation = useCallback(async (modelId: string): Promise<ConversationRecord> => {
+    const existing = conversationsRef.current.find((item) => item.id === activeConversationIdRef.current);
     if (existing) return existing;
 
-    const created = createConversationRecord(selectedModelId);
+    const created = createConversationRecord(modelId);
     await saveConversation(created);
-    const next = [created, ...conversations];
-    setConversations(next);
+    setConversations((current) => [created, ...current]);
     setActiveConversationId(created.id);
     return created;
-  }
+  }, []);
 
-  async function warmupModel(options: { auto?: boolean } = {}) {
+  const handleBootProgress = useCallback((progress: EngineBootProgress) => {
+    setEngineReady(false);
+    setEngineState(progress.phase);
+    setProgressValue(mapPhaseProgress(progress.phase, progress.progress));
+    setProgressText(progress.text);
+  }, []);
+
+  const warmupModel = useCallback(async (options: { auto?: boolean; modelId?: string } = {}) => {
+    const targetModelId = options.modelId ?? selectedModelIdRef.current;
+
     if (warmupPromiseRef.current) {
-      return warmupPromiseRef.current;
+      if (warmupModelIdRef.current === targetModelId) {
+        return warmupPromiseRef.current;
+      }
+      throw new Error('Another offline setup is already running. Wait for it to finish.');
     }
 
-    if (engineState === 'ready' && zayaEngine.getActiveModelId() === selectedModelId) {
+    if (zayaEngine.isReady(targetModelId)) {
+      setEngineReady(true);
+      setEngineState((current) => (current === 'generating' ? current : 'ready'));
       setProgressValue(1);
       setProgressText('Offline model is ready on this device.');
       return;
@@ -182,57 +192,228 @@ export default function App() {
 
     const run = (async () => {
       if (!support.supported) {
-        setToast({ id: createId('toast'), tone: 'error', message: 'This browser is missing the features needed for local AI.' });
-        return;
+        throw new Error('This browser is missing the features needed for local AI.');
       }
 
-      const cached = await refreshCachedModel(selectedModelId);
+      const cached = await refreshCachedModel(targetModelId);
 
       if (!online && !cached) {
+        setEngineReady(false);
         setEngineState('error');
+        setProgressValue(0);
         setProgressText('You need an internet connection for the first offline model download.');
-        setToast({ id: createId('toast'), tone: 'error', message: 'Connect to the internet once to download the offline model.' });
-        return;
+        throw new Error('Connect to the internet once to download the offline model.');
       }
 
       try {
-        setEngineState('loading');
-        setProgressValue(cached ? 0.02 : 0);
-        setProgressText(cached ? 'Loading downloaded model…' : 'Downloading offline model…');
-        await zayaEngine.boot(selectedModelId, handleProgress);
+        setEngineReady(false);
+        setEngineState(cached ? 'loading' : 'downloading');
+        setProgressValue(cached ? PHASE_PROGRESS.loading[0] : 0.02);
+        setProgressText(cached ? 'Loading cached model…' : 'Downloading offline model…');
+
+        await zayaEngine.boot(targetModelId, handleBootProgress);
+
+        if (!zayaEngine.isReady(targetModelId)) {
+          throw new Error('The offline model finished setup, but it is not ready yet.');
+        }
+
+        await refreshCachedModel(targetModelId);
+        await ensureConversation(targetModelId);
+
+        setEngineReady(true);
         setEngineState('ready');
         setProgressValue(1);
         setProgressText('Offline model is ready on this device.');
-        await refreshCachedModel();
-        await ensureConversation();
-        autoLoadAttemptRef.current = selectedModelId;
+        autoLoadAttemptRef.current = targetModelId;
+
         if (!options.auto) {
           setSettingsOpen(false);
           setToast({ id: createId('toast'), tone: 'success', message: 'Offline setup finished.' });
         }
       } catch (error) {
         console.error('Zaya offline setup failed', error);
+        setEngineReady(false);
         setEngineState('error');
         setProgressValue(0);
-        setProgressText('Offline setup failed. Try the download again.');
-        setToast({ id: createId('toast'), tone: 'error', message: toReadableError(error) });
+        setProgressText('Offline setup failed. Try again.');
+        autoLoadAttemptRef.current = '';
+        throw error;
       }
     })();
 
+    warmupModelIdRef.current = targetModelId;
     warmupPromiseRef.current = run.finally(() => {
       warmupPromiseRef.current = null;
+      warmupModelIdRef.current = null;
     });
 
-    return warmupPromiseRef.current;
-  }
+    try {
+      await warmupPromiseRef.current;
+    } catch (error) {
+      setToast({ id: createId('toast'), tone: 'error', message: toReadableError(error) });
+      throw error;
+    }
+  }, [ensureConversation, handleBootProgress, online, refreshCachedModel, support.supported]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const bootstrap = async () => {
+      try {
+        const [savedModelId, savedConversationId, savedConversations] = await Promise.all([
+          getSetting(SELECTED_MODEL_KEY, DEFAULT_MODEL_ID),
+          getSetting(ACTIVE_CONVERSATION_KEY, ''),
+          listConversations(),
+        ]);
+
+        if (cancelled) return;
+
+        setSelectedModelId(savedModelId);
+        setConversations(savedConversations);
+        setActiveConversationId(savedConversationId || savedConversations[0]?.id || '');
+        setEngineReady(zayaEngine.isReady(savedModelId));
+        setEngineState(zayaEngine.isReady(savedModelId) ? 'ready' : 'idle');
+        setBootstrapped(true);
+
+        const cached = await refreshCachedModel(savedModelId);
+        if (cancelled) return;
+
+        if (zayaEngine.isReady(savedModelId)) {
+          setEngineReady(true);
+          setEngineState('ready');
+          setProgressValue(1);
+          setProgressText('Offline model is ready on this device.');
+        } else if (cached) {
+          setEngineReady(false);
+          setEngineState('idle');
+          setProgressValue(0);
+          setProgressText('Downloaded model found. Loading is still required.');
+        } else {
+          setEngineReady(false);
+          setEngineState('idle');
+          setProgressValue(0);
+          setProgressText('Offline setup has not been started yet.');
+        }
+      } catch (error) {
+        if (cancelled) return;
+        setToast({ id: createId('toast'), tone: 'error', message: toReadableError(error) });
+      }
+    };
+
+    void bootstrap();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [refreshCachedModel]);
+
+  useEffect(() => {
+    return () => {
+      void zayaEngine.unload();
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!bootstrapped) return;
+
+    void saveSetting(SELECTED_MODEL_KEY, selectedModelId);
+    setEngineReady(zayaEngine.isReady(selectedModelId));
+    autoLoadAttemptRef.current = '';
+
+    let cancelled = false;
+    void refreshCachedModel(selectedModelId).then((cached) => {
+      if (cancelled || selectedModelIdRef.current !== selectedModelId) return;
+
+      if (zayaEngine.isReady(selectedModelId)) {
+        setEngineReady(true);
+        setEngineState((current) => (current === 'generating' ? current : 'ready'));
+        setProgressValue(1);
+        setProgressText('Offline model is ready on this device.');
+        return;
+      }
+
+      if (isBusyState(engineState)) return;
+
+      setEngineReady(false);
+      setEngineState('idle');
+      setProgressValue(0);
+      setProgressText(cached ? 'Downloaded model found. Loading is still required.' : 'Offline setup has not been started yet.');
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [bootstrapped, refreshCachedModel, selectedModelId]);
+
+  useEffect(() => {
+    if (!activeConversationId) {
+      setMessages([]);
+      return;
+    }
+
+    void loadMessages(activeConversationId);
+    void saveSetting(ACTIVE_CONVERSATION_KEY, activeConversationId);
+  }, [activeConversationId, loadMessages]);
+
+  useEffect(() => {
+    if (!bootstrapped || !support.supported) return;
+    if (engineReady || zayaEngine.isReady(selectedModelId)) return;
+    if (!cachedModel) {
+      autoLoadAttemptRef.current = '';
+      return;
+    }
+    if (isBusyState(engineState) || warmupPromiseRef.current) return;
+    if (autoLoadAttemptRef.current === selectedModelId) return;
+
+    autoLoadAttemptRef.current = selectedModelId;
+    void warmupModel({ auto: true, modelId: selectedModelId }).catch(() => {
+      // toast handled inside warmupModel
+    });
+  }, [bootstrapped, cachedModel, engineReady, engineState, selectedModelId, support.supported, warmupModel]);
+
+  useEffect(() => {
+    if (!bootstrapped) return;
+
+    const handleResume = () => {
+      const modelId = selectedModelIdRef.current;
+      const ready = zayaEngine.isReady(modelId);
+      setEngineReady(ready);
+      if (!ready && !generatingRef.current) {
+        autoLoadAttemptRef.current = '';
+      }
+      void refreshCachedModel(modelId);
+    };
+
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible') {
+        handleResume();
+      }
+    };
+
+    window.addEventListener('pageshow', handleResume);
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+
+    return () => {
+      window.removeEventListener('pageshow', handleResume);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+    };
+  }, [bootstrapped, refreshCachedModel]);
+
+  useEffect(() => {
+    if (!toast) return;
+    const timer = window.setTimeout(() => setToast(null), 2800);
+    return () => window.clearTimeout(timer);
+  }, [toast]);
 
   async function deleteModelCache() {
     try {
       await zayaEngine.removeCachedModel(selectedModelId);
+      setEngineReady(false);
       setEngineState('idle');
       setProgressValue(0);
       setProgressText('Downloaded model was removed.');
-      await refreshCachedModel();
+      autoLoadAttemptRef.current = '';
+      await refreshCachedModel(selectedModelId);
       setToast({ id: createId('toast'), tone: 'success', message: 'Downloaded model removed.' });
     } catch (error) {
       setToast({ id: createId('toast'), tone: 'error', message: toReadableError(error) });
@@ -241,7 +422,7 @@ export default function App() {
 
   async function createConversation() {
     try {
-      const created = createConversationRecord(selectedModelId);
+      const created = createConversationRecord(selectedModelIdRef.current);
       await saveConversation(created);
       setConversations((current) => [created, ...current]);
       setActiveConversationId(created.id);
@@ -255,13 +436,14 @@ export default function App() {
   async function removeConversation(id: string) {
     try {
       await deleteConversation(id);
-      const remaining = conversations.filter((item) => item.id !== id);
-      setConversations(remaining);
-
-      if (activeConversationId === id) {
-        setActiveConversationId(remaining[0]?.id ?? '');
-        setMessages([]);
-      }
+      setConversations((current) => {
+        const remaining = current.filter((item) => item.id !== id);
+        if (activeConversationIdRef.current === id) {
+          setActiveConversationId(remaining[0]?.id ?? '');
+          setMessages([]);
+        }
+        return remaining;
+      });
     } catch (error) {
       setToast({ id: createId('toast'), tone: 'error', message: toReadableError(error) });
     }
@@ -269,21 +451,52 @@ export default function App() {
 
   async function sendMessage() {
     const userText = draft.trim();
-    if (!userText || generating || !chatUnlocked) return;
+    const modelId = selectedModelIdRef.current;
+
+    if (!userText || generatingRef.current || !chatUnlocked) return;
+
+    const assistantMessageId = createId('msg');
+    const assistantCreatedAt = new Date().toISOString();
+    let streamedContent = '';
+    let assistantConversationId = activeConversationIdRef.current;
+
+    const upsertAssistantMessage = (content: string, status: ChatMessage['status']) => {
+      setMessages((current) => {
+        const index = current.findIndex((message) => message.id === assistantMessageId);
+        const nextMessage: ChatMessage = {
+          id: assistantMessageId,
+          conversationId: assistantConversationId,
+          role: 'assistant',
+          content,
+          createdAt: assistantCreatedAt,
+          status,
+        };
+
+        if (index === -1) {
+          if (!content.trim() && status === 'streaming') return current;
+          return [...current, nextMessage];
+        }
+
+        return current.map((message) => (message.id === assistantMessageId ? { ...nextMessage, conversationId: message.conversationId } : message));
+      });
+    };
 
     try {
-      if (!zayaEngine.isReady() || engineState !== 'ready') {
-        await warmupModel();
+      if (!zayaEngine.isReady(modelId)) {
+        await warmupModel({ modelId });
       }
 
-      if (!zayaEngine.isReady() || engineState !== 'ready') {
+      if (!zayaEngine.isReady(modelId)) {
         throw new Error('The offline model is still loading. Wait a moment and try again.');
       }
 
       setGenerating(true);
+      setEngineState('generating');
+      setEngineReady(true);
       setDraft('');
-      const conversation = await ensureConversation();
 
+      const conversation = await ensureConversation(modelId);
+      assistantConversationId = conversation.id;
       const now = new Date().toISOString();
       const userMessage: ChatMessage = {
         id: createId('msg'),
@@ -294,76 +507,89 @@ export default function App() {
         status: 'complete',
       };
 
-      const assistantMessage: ChatMessage = {
-        id: createId('msg'),
-        conversationId: conversation.id,
-        role: 'assistant',
-        content: '',
-        createdAt: new Date().toISOString(),
-        status: 'streaming',
+      setMessages((current) => [...current, userMessage]);
+      await saveMessage(userMessage);
+
+      const userConversationPatch: ConversationRecord = {
+        ...conversation,
+        title: conversation.title === 'New chat' ? createTitleFromText(userText) : conversation.title,
+        updatedAt: now,
+        modelId,
+        lastMessagePreview: userText.slice(0, 80),
       };
 
-      setMessages((current) => [...current, userMessage, assistantMessage]);
-      await saveMessages([userMessage, assistantMessage]);
+      setConversations((current) => {
+        const rest = current.filter((item) => item.id !== conversation.id);
+        return [userConversationPatch, ...rest];
+      });
+      await saveConversation(userConversationPatch);
 
-      const priorCompleteMessages = messages.filter((message) => message.status !== 'error' && message.content.trim());
+      const history = [...messagesRef.current, userMessage]
+        .filter((message) => message.status !== 'error' && message.content.trim())
+        .map((message) => ({ role: message.role, content: message.content } satisfies ChatCompletionMessageParam));
+
       const promptMessages: ChatCompletionMessageParam[] = [
         { role: 'system', content: buildSystemPrompt() },
-        ...priorCompleteMessages.map((message) => ({ role: message.role, content: message.content })),
-        { role: 'user', content: userText },
+        ...history,
       ];
 
-      let streamedContent = '';
-
-      await zayaEngine.streamReply(promptMessages, (token) => {
+      const finalText = await zayaEngine.streamReply(promptMessages, (token) => {
         streamedContent += token;
-        setMessages((current) =>
-          current.map((message) =>
-            message.id === assistantMessage.id
-              ? { ...message, content: `${message.content}${token}` }
-              : message,
-          ),
-        );
+        upsertAssistantMessage(streamedContent, 'streaming');
       });
 
       const finalAssistant: ChatMessage = {
-        ...assistantMessage,
-        content: streamedContent.trim() || 'I am ready locally, but I did not produce a reply. Please try again.',
+        id: assistantMessageId,
+        conversationId: conversation.id,
+        role: 'assistant',
+        content: finalText,
+        createdAt: assistantCreatedAt,
         status: 'complete',
       };
 
+      upsertAssistantMessage(finalAssistant.content, finalAssistant.status);
+      await saveMessage(finalAssistant);
+
       const conversationPatch: ConversationRecord = {
-        ...conversation,
-        title: conversation.title === 'New chat' ? createTitleFromText(userText) : conversation.title,
+        ...userConversationPatch,
         updatedAt: new Date().toISOString(),
-        modelId: selectedModelId,
         lastMessagePreview: finalAssistant.content.slice(0, 80),
       };
 
-      setMessages((current) => current.map((message) => (message.id === assistantMessage.id ? finalAssistant : message)));
       setConversations((current) => {
         const rest = current.filter((item) => item.id !== conversation.id);
         return [conversationPatch, ...rest];
       });
-      await saveMessage(finalAssistant);
       await saveConversation(conversationPatch);
+
       setEngineState('ready');
+      setEngineReady(true);
     } catch (error) {
-      setEngineState('error');
-      setMessages((current) =>
-        current.map((message) =>
-          message.status === 'streaming'
-            ? {
-                ...message,
-                status: 'error',
-                content: message.content || 'Local generation failed.',
-              }
-            : message,
-        ),
-      );
-      setToast({ id: createId('toast'), tone: 'error', message: toReadableError(error) });
+      const readable = toReadableError(error);
+      const ready = zayaEngine.isReady(modelId);
+      setEngineReady(ready);
+      setEngineState(ready ? 'ready' : 'error');
+
+      if (streamedContent.trim()) {
+        const failedAssistant: ChatMessage = {
+          id: assistantMessageId,
+          conversationId: assistantConversationId,
+          role: 'assistant',
+          content: streamedContent.trim(),
+          createdAt: assistantCreatedAt,
+          status: 'error',
+        };
+        upsertAssistantMessage(failedAssistant.content, failedAssistant.status);
+        await saveMessage(failedAssistant);
+      }
+
+      setToast({ id: createId('toast'), tone: 'error', message: readable });
     } finally {
       setGenerating(false);
+      if (zayaEngine.isReady(modelId)) {
+        setEngineState('ready');
+        setEngineReady(true);
+      }
     }
   }
 
@@ -371,7 +597,8 @@ export default function App() {
     try {
       await zayaEngine.interrupt();
       setGenerating(false);
-      setMessages((current) => current.map((message) => (message.status === 'streaming' ? { ...message, status: 'complete' } : message)));
+      setEngineState(zayaEngine.isReady(selectedModelIdRef.current) ? 'ready' : 'error');
+      setMessages((current) => current.filter((message) => !(message.status === 'streaming' && !message.content.trim())));
     } catch (error) {
       setToast({ id: createId('toast'), tone: 'error', message: toReadableError(error) });
     }
@@ -385,6 +612,7 @@ export default function App() {
       setMessages([]);
       setActiveConversationId('');
       setDraft('');
+      setEngineReady(false);
       setEngineState('idle');
       setProgressValue(0);
       setProgressText('Offline setup has not been started yet.');
@@ -396,7 +624,9 @@ export default function App() {
     }
   }
 
-  const chatUnlocked = support.supported && engineState === 'ready';
+  const chatUnlocked = support.supported && engineReady && (engineState === 'ready' || engineState === 'generating');
+  const settingsBusy = isBusyState(engineState);
+  const headerStatusLabel = getHeaderStatusLabel(engineState, online, chatUnlocked);
 
   return (
     <>
@@ -404,6 +634,7 @@ export default function App() {
         <Header
           online={online}
           chatUnlocked={chatUnlocked}
+          statusLabel={headerStatusLabel}
           onOpenSettings={() => setSettingsOpen(true)}
         />
 
@@ -424,6 +655,7 @@ export default function App() {
       <SettingsSheet
         open={settingsOpen}
         onClose={() => setSettingsOpen(false)}
+        canClose={!isSetupState(engineState)}
         selectedModelId={selectedModelId}
         onSelectModel={setSelectedModelId}
         onWarmup={warmupModel}
@@ -431,7 +663,8 @@ export default function App() {
         progressText={progressText}
         progressValue={progressValue}
         cachedModel={cachedModel}
-        busy={engineState === 'loading' || generating}
+        engineReady={engineReady}
+        busy={settingsBusy}
         conversations={conversations}
         activeConversationId={activeConversationId}
         onSelectConversation={setActiveConversationId}

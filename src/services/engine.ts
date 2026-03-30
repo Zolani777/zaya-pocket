@@ -6,8 +6,37 @@ import type {
   WebWorkerMLCEngine,
 } from '@mlc-ai/web-llm';
 import { DEFAULT_MODEL_ID, MODEL_OPTIONS } from '@/constants/models';
+import type { EngineBootProgress, SetupPhase } from '@/types/chat';
 
 const ALLOWED_MODEL_IDS = new Set(MODEL_OPTIONS.map((model) => model.id));
+
+function clampProgress(value: unknown): number {
+  if (typeof value !== 'number' || Number.isNaN(value)) return 0;
+  return Math.max(0, Math.min(1, value));
+}
+
+function classifyPhase(progress: InitProgressReport): { phase: SetupPhase; text: string } {
+  const rawText = (progress.text || '').trim();
+  const source = rawText.toLowerCase();
+
+  if (/fetching param cache|downloading|tokenizer|params/i.test(source)) {
+    return { phase: 'downloading', text: 'Downloading offline model…' };
+  }
+
+  if (/loading model from cache/i.test(source)) {
+    return { phase: 'loading', text: 'Loading cached model…' };
+  }
+
+  if (/shader|pipeline|webgpu|gpu/i.test(source)) {
+    return { phase: 'initializing', text: 'Initializing local engine…' };
+  }
+
+  if (/finish loading|ready/i.test(source) || clampProgress(progress.progress) >= 1) {
+    return { phase: 'ready', text: 'Offline model is ready on this device.' };
+  }
+
+  return { phase: 'initializing', text: rawText || 'Initializing local engine…' };
+}
 
 class ZayaEngine {
   private engine: WebWorkerMLCEngine | null = null;
@@ -27,6 +56,11 @@ class ZayaEngine {
 
   getActiveModelId(): string | null {
     return this.activeModelId;
+  }
+
+  isReady(modelId?: string): boolean {
+    if (!this.engine || !this.activeModelId) return false;
+    return modelId ? this.activeModelId === modelId : true;
   }
 
   private async getAppConfig(): Promise<AppConfig> {
@@ -58,29 +92,34 @@ class ZayaEngine {
     return this.worker;
   }
 
-  private wrapProgress(modelId: string, onProgress?: (progress: InitProgressReport) => void) {
-    return (progress: InitProgressReport) => {
-      const numeric = typeof progress.progress === 'number' ? Math.max(0, Math.min(1, progress.progress)) : 0;
-      const source = (progress.text || '').trim().toLowerCase();
-      let text = progress.text?.trim() || '';
+  private wrapProgress(onProgress?: (progress: EngineBootProgress) => void) {
+    let lastPhase: SetupPhase | null = null;
 
-      if (!text) {
-        text = numeric >= 1 ? 'Offline model is ready.' : 'Downloading offline model…';
-      } else if (/fetching|downloading|param cache|cache\[|ndarray|tokenizer|params/i.test(source)) {
-        text = 'Downloading offline model…';
-      } else if (/loading.*cache|from cache|cached/i.test(source)) {
-        text = 'Loading downloaded model…';
-      } else if (/initial|creating|instantiating|warm|shader|webgpu|pipeline|prefill/i.test(source)) {
-        text = 'Initializing local engine…';
+    return (progress: InitProgressReport) => {
+      const numeric = clampProgress(progress.progress);
+      const rawText = (progress.text || '').trim();
+      const classified = classifyPhase(progress);
+      let phase = classified.phase;
+      let text = classified.text;
+
+      if (lastPhase === 'downloading' && phase === 'loading') {
+        phase = 'verifying';
+        text = 'Verifying downloaded model files…';
       }
 
-      onProgress?.({ ...progress, progress: numeric, text });
+      lastPhase = classified.phase;
+      onProgress?.({
+        phase,
+        progress: numeric,
+        text,
+        rawText,
+      });
     };
   }
 
   async boot(
     modelId: string,
-    onProgress?: (progress: InitProgressReport) => void,
+    onProgress?: (progress: EngineBootProgress) => void,
   ): Promise<void> {
     if (!ALLOWED_MODEL_IDS.has(modelId)) {
       throw new Error('This model is not supported by Zaya Pocket.');
@@ -94,14 +133,19 @@ class ZayaEngine {
     }
 
     if (this.engine && this.activeModelId === modelId) {
-      onProgress?.({ progress: 1, timeElapsed: 0, text: 'Offline model is ready.' });
+      onProgress?.({
+        phase: 'ready',
+        progress: 1,
+        text: 'Offline model is ready on this device.',
+        rawText: 'Offline model is ready.',
+      });
       return;
     }
 
     const run = async () => {
       const { CreateWebWorkerMLCEngine } = await this.getWebLLM();
       const appConfig = await this.getAppConfig();
-      const progressCallback = this.wrapProgress(modelId, onProgress);
+      const progressCallback = this.wrapProgress(onProgress);
       const worker = this.getOrCreateWorker();
 
       try {
@@ -118,7 +162,7 @@ class ZayaEngine {
         this.engine.setInitProgressCallback(progressCallback);
 
         if (this.activeModelId !== modelId) {
-          progressCallback({ progress: 0.98, timeElapsed: 0, text: 'Initializing local engine…' });
+          progressCallback({ progress: 0.6, timeElapsed: 0, text: 'Loading model from cache[0/1]: 0MB loaded. 0% completed, 0 secs elapsed.' });
           await this.engine.reload(modelId);
           this.activeModelId = modelId;
         }
@@ -137,10 +181,6 @@ class ZayaEngine {
     });
 
     return this.bootPromise;
-  }
-
-  isReady(): boolean {
-    return Boolean(this.engine && this.activeModelId);
   }
 
   async isModelCached(modelId: string): Promise<boolean> {
@@ -195,26 +235,26 @@ class ZayaEngine {
     let finalText = '';
 
     for await (const chunk of stream) {
-      const delta = chunk.choices[0]?.delta?.content;
-      const token = this.normalizeDelta(delta);
-      if (!token) continue;
-      finalText += token;
-      onToken(token);
+      const choice = chunk.choices[0];
+      if (!choice) continue;
+
+      const token = this.normalizeDelta(choice.delta?.content);
+      if (token) {
+        finalText += token;
+        onToken(token);
+      }
+
+      if (choice.finish_reason === 'abort') {
+        throw new Error('Generation was stopped before the reply finished.');
+      }
     }
 
-    if (finalText.trim()) {
-      return finalText.trim();
+    const trimmed = finalText.trim();
+    if (!trimmed) {
+      throw new Error('The local model returned an empty reply. Please try again.');
     }
 
-    const completion = await this.engine.chat.completions.create({
-      messages,
-      stream: false,
-      temperature: 0.7,
-      top_p: 0.95,
-    });
-
-    const fallback = this.normalizeDelta(completion.choices?.[0]?.message?.content);
-    return fallback.trim();
+    return trimmed;
   }
 
   private normalizeDelta(delta: unknown): string {
@@ -233,6 +273,7 @@ class ZayaEngine {
       if (typeof record.text === 'string') return record.text;
       if (typeof record.content === 'string') return record.content;
       if (Array.isArray(record.content)) return this.normalizeDelta(record.content);
+      if (typeof record.delta === 'string') return record.delta;
     }
 
     return '';
