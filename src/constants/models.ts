@@ -3,19 +3,19 @@ import type { ModelOption } from '@/types/chat';
 export const MODEL_OPTIONS: ModelOption[] = [
   {
     id: 'Llama-3.2-1B-Instruct-q4f16_1-MLC',
-    name: 'Llama 3.2 1B',
-    sizeLabel: '1B · fast',
-    memoryLabel: '~879 MB VRAM class',
-    description: 'The safest first ship for iPhone-class browsers. Smaller, faster, better chance to initialize cleanly.',
+    name: 'Starter',
+    sizeLabel: 'Llama 3.2 1B',
+    memoryLabel: 'About 1 GB download',
+    description: 'Best first setup for most phones. Faster startup and lighter local use.',
     recommended: true,
   },
   {
     id: 'Llama-3.2-3B-Instruct-q4f16_1-MLC',
-    name: 'Llama 3.2 3B',
-    sizeLabel: '3B · better answers',
-    memoryLabel: '~2264 MB VRAM class',
-    description: 'Higher quality but much heavier. Keep this as the opt-in upgrade tier after the 1B model is proven stable.',
-    caution: 'Use only on stronger devices with patience for longer cold starts.',
+    name: 'Enhanced',
+    sizeLabel: 'Llama 3.2 3B',
+    memoryLabel: 'About 2.3 GB download',
+    description: 'Sharper replies, but heavier. Use this after Starter is stable on your device.',
+    caution: 'Can take longer to download and warm up on mobile hardware.',
   },
 ];
 

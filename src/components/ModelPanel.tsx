@@ -1,4 +1,5 @@
 import { MODEL_OPTIONS } from '@/constants/models';
+import type { EngineState } from '@/types/chat';
 
 interface ModelPanelProps {
   selectedModelId: string;
@@ -9,6 +10,14 @@ interface ModelPanelProps {
   progressValue: number;
   cached: boolean;
   busy: boolean;
+  supported: boolean;
+  engineState: EngineState;
+}
+
+function getPrimaryLabel(cached: boolean, engineState: EngineState) {
+  if (engineState === 'loading') return 'Preparing…';
+  if (cached) return 'Load downloaded brain';
+  return 'Enable offline chat';
 }
 
 export function ModelPanel({
@@ -20,15 +29,15 @@ export function ModelPanel({
   progressValue,
   cached,
   busy,
+  supported,
+  engineState,
 }: ModelPanelProps) {
   return (
-    <section className="card stack-lg">
+    <section className="panel-section stack-md">
       <div>
-        <p className="eyebrow">Model lane</p>
-        <h2>Choose the local brain</h2>
-        <p>
-          Start with the 1B model. It is the safest first ship for mobile-class WebGPU.
-        </p>
+        <p className="eyebrow">Offline setup</p>
+        <h2>Choose your local brain</h2>
+        <p>Starter is the best first setup. You can upgrade later once the device proves stable.</p>
       </div>
 
       <div className="model-grid" role="radiogroup" aria-label="Available models">
@@ -44,13 +53,13 @@ export function ModelPanel({
             >
               <div className="model-card__topline">
                 <strong>{model.name}</strong>
-                {model.recommended ? <span className="model-badge">recommended</span> : null}
+                {model.recommended ? <span className="model-badge">Best first</span> : null}
               </div>
-              <p>{model.description}</p>
-              <div className="model-meta">
+              <div className="model-subline">
                 <span>{model.sizeLabel}</span>
                 <span>{model.memoryLabel}</span>
               </div>
+              <p>{model.description}</p>
               {model.caution ? <p className="model-caution">{model.caution}</p> : null}
             </button>
           );
@@ -68,11 +77,11 @@ export function ModelPanel({
       </div>
 
       <div className="button-row">
-        <button className="button" onClick={() => void onWarmup()} disabled={busy}>
-          {cached ? 'Load cached model' : 'Download and load model'}
+        <button className="button" onClick={() => void onWarmup()} disabled={busy || !supported}>
+          {getPrimaryLabel(cached, engineState)}
         </button>
         <button className="button button--ghost" onClick={() => void onDeleteCache()} disabled={busy || !cached}>
-          Remove cache
+          Remove downloaded brain
         </button>
       </div>
     </section>

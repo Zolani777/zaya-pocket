@@ -2,6 +2,7 @@ export interface RuntimeSupport {
   hasWorker: boolean;
   hasIndexedDb: boolean;
   hasWebGpu: boolean;
+  hasSecureContext: boolean;
   supported: boolean;
 }
 
@@ -9,12 +10,14 @@ export function getRuntimeSupport(): RuntimeSupport {
   const hasWorker = typeof window !== 'undefined' && 'Worker' in window;
   const hasIndexedDb = typeof window !== 'undefined' && 'indexedDB' in window;
   const hasWebGpu = typeof navigator !== 'undefined' && 'gpu' in navigator;
+  const hasSecureContext = typeof window !== 'undefined' ? window.isSecureContext : false;
 
   return {
     hasWorker,
     hasIndexedDb,
     hasWebGpu,
-    supported: hasWorker && hasIndexedDb && hasWebGpu,
+    hasSecureContext,
+    supported: hasWorker && hasIndexedDb && hasWebGpu && hasSecureContext,
   };
 }
 

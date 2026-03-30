@@ -17,31 +17,35 @@ export function ConversationList({
   onDelete,
 }: ConversationListProps) {
   return (
-    <section className="card stack-lg">
-      <div className="panel-header">
+    <section className="panel-section stack-md">
+      <div className="panel-header panel-header--tight">
         <div>
-          <p className="eyebrow">Local memory</p>
-          <h2>Conversations</h2>
+          <p className="eyebrow">Chats</p>
+          <h2>Your conversations</h2>
         </div>
         <button className="button button--ghost" onClick={() => void onCreate()}>
-          New chat
+          New
         </button>
       </div>
 
       <div className="conversation-list" role="list">
         {conversations.length === 0 ? (
-          <p className="empty-copy">No local chats yet. Start one and it will stay on this device.</p>
+          <div className="empty-card">
+            <strong>No chats yet</strong>
+            <p>Start a conversation and it stays on this device.</p>
+          </div>
         ) : (
           conversations.map((conversation) => {
             const active = conversation.id === activeConversationId;
             return (
               <article key={conversation.id} className={`conversation-item ${active ? 'conversation-item--active' : ''}`}>
-                <button className="conversation-item__main" onClick={() => onSelect(conversation.id)}>
+                <button type="button" className="conversation-item__main" onClick={() => onSelect(conversation.id)}>
                   <strong>{conversation.title}</strong>
                   <span>{conversation.lastMessagePreview || 'No messages yet'}</span>
                   <small>{formatUpdatedAt(conversation.updatedAt)}</small>
                 </button>
                 <button
+                  type="button"
                   className="conversation-item__delete"
                   aria-label={`Delete ${conversation.title}`}
                   onClick={() => void onDelete(conversation.id)}

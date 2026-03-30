@@ -1,11 +1,10 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import type { ChatCompletionMessageParam, InitProgressReport } from '@mlc-ai/web-llm';
 import { Header } from '@/components/Header';
-import { InstallCard } from '@/components/InstallCard';
-import { ModelPanel } from '@/components/ModelPanel';
 import { ConversationList } from '@/components/ConversationList';
 import { MessageList } from '@/components/MessageList';
 import { Composer } from '@/components/Composer';
+import { SettingsSheet } from '@/components/SettingsSheet';
 import { Toast } from '@/components/Toast';
 import { buildSystemPrompt } from '@/config/persona';
 import { DEFAULT_MODEL_ID } from '@/constants/models';
@@ -32,6 +31,8 @@ import './styles.css';
 const ACTIVE_CONVERSATION_KEY = 'activeConversationId';
 const SELECTED_MODEL_KEY = 'selectedModelId';
 
+type SidebarTab = 'chats' | 'settings';
+
 function createConversationRecord(modelId: string): ConversationRecord {
   const now = new Date().toISOString();
   return {
@@ -42,6 +43,10 @@ function createConversationRecord(modelId: string): ConversationRecord {
     modelId,
     lastMessagePreview: '',
   };
+}
+
+function isDesktopViewport() {
+  return typeof window !== 'undefined' && window.matchMedia('(min-width: 1100px)').matches;
 }
 
 export default function App() {
@@ -57,10 +62,12 @@ export default function App() {
   const [selectedModelId, setSelectedModelId] = useState(DEFAULT_MODEL_ID);
   const [cachedModel, setCachedModel] = useState(false);
   const [progressValue, setProgressValue] = useState(0);
-  const [progressText, setProgressText] = useState('Model not loaded yet.');
+  const [progressText, setProgressText] = useState('Offline chat has not been enabled yet.');
   const [toast, setToast] = useState<ToastState | null>(null);
   const [generating, setGenerating] = useState(false);
   const [bootstrapped, setBootstrapped] = useState(false);
+  const [sidebarTab, setSidebarTab] = useState<SidebarTab>('chats');
+  const [panelOpen, setPanelOpen] = useState(() => isDesktopViewport());
 
   const refreshCachedModel = useCallback(async (modelId = selectedModelId) => {
     try {
@@ -70,6 +77,17 @@ export default function App() {
       setCachedModel(false);
     }
   }, [selectedModelId]);
+
+  const closeMobilePanel = useCallback(() => {
+    if (!isDesktopViewport()) {
+      setPanelOpen(false);
+    }
+  }, []);
+
+  const openSidebarTab = useCallback((tab: SidebarTab) => {
+    setSidebarTab(tab);
+    setPanelOpen(true);
+  }, []);
 
   const loadMessages = useCallback(async (conversationId: string) => {
     try {
@@ -91,9 +109,10 @@ export default function App() {
       setSelectedModelId(savedModelId);
       setConversations(savedConversations);
       setActiveConversationId(savedConversationId || savedConversations[0]?.id || '');
+      setSidebarTab(savedConversations.length > 0 ? 'chats' : 'settings');
       setBootstrapped(true);
       await refreshCachedModel(savedModelId);
-      setToast({ id: createId('toast'), tone: 'success', message: 'Zaya Pocket is ready for local setup.' });
+      setToast({ id: createId('toast'), tone: 'success', message: 'Zaya Pocket is ready.' });
     } catch (error) {
       setToast({ id: createId('toast'), tone: 'error', message: toReadableError(error) });
     }
@@ -105,6 +124,15 @@ export default function App() {
       void zayaEngine.unload();
     };
   }, [bootstrap]);
+
+  useEffect(() => {
+    const media = window.matchMedia('(min-width: 1100px)');
+    const syncPanelState = () => setPanelOpen(media.matches);
+
+    syncPanelState();
+    media.addEventListener('change', syncPanelState);
+    return () => media.removeEventListener('change', syncPanelState);
+  }, []);
 
   useEffect(() => {
     if (!bootstrapped) return;
@@ -139,30 +167,31 @@ export default function App() {
     return () => window.removeEventListener('zaya:offline-ready', handleOfflineReady);
   }, []);
 
-
   function handleProgress(progress: InitProgressReport) {
     const numeric = typeof progress.progress === 'number' ? progress.progress : 0;
     setProgressValue(Math.max(0, Math.min(1, numeric)));
-    setProgressText(progress.text || 'Loading local model…');
+    setProgressText(progress.text || 'Setting up offline chat…');
   }
 
   async function warmupModel() {
     if (!support.supported) {
-      setToast({ id: createId('toast'), tone: 'error', message: 'This browser does not expose WebGPU + Worker + IndexedDB together.' });
+      setToast({ id: createId('toast'), tone: 'error', message: 'This device still needs WebGPU, workers, IndexedDB, and a secure connection.' });
+      openSidebarTab('settings');
       return;
     }
 
     try {
       setEngineState('loading');
       setProgressValue(0);
-      setProgressText('Preparing local model…');
+      setProgressText('Preparing local brain…');
       await zayaEngine.boot(selectedModelId, handleProgress);
       setEngineState('ready');
+      setProgressText('Offline chat is ready.');
       await refreshCachedModel();
-      setToast({ id: createId('toast'), tone: 'success', message: 'Local model is loaded.' });
+      setToast({ id: createId('toast'), tone: 'success', message: 'Offline chat is ready.' });
     } catch (error) {
       setEngineState('error');
-      setProgressText('Model load failed.');
+      setProgressText('Offline setup failed.');
       setToast({ id: createId('toast'), tone: 'error', message: toReadableError(error) });
       throw error;
     }
@@ -173,9 +202,9 @@ export default function App() {
       await zayaEngine.removeCachedModel(selectedModelId);
       setEngineState('idle');
       setProgressValue(0);
-      setProgressText('Model cache removed.');
+      setProgressText('Downloaded brain removed.');
       await refreshCachedModel();
-      setToast({ id: createId('toast'), tone: 'success', message: 'Cached model removed from this device.' });
+      setToast({ id: createId('toast'), tone: 'success', message: 'Downloaded brain removed from this device.' });
     } catch (error) {
       setToast({ id: createId('toast'), tone: 'error', message: toReadableError(error) });
     }
@@ -200,7 +229,8 @@ export default function App() {
       setConversations((current) => [created, ...current]);
       setActiveConversationId(created.id);
       setMessages([]);
-      setToast({ id: createId('toast'), tone: 'success', message: 'Fresh local chat created.' });
+      closeMobilePanel();
+      setToast({ id: createId('toast'), tone: 'success', message: 'New local chat created.' });
     } catch (error) {
       setToast({ id: createId('toast'), tone: 'error', message: toReadableError(error) });
     }
@@ -217,7 +247,7 @@ export default function App() {
         setMessages([]);
       }
 
-      setToast({ id: createId('toast'), tone: 'success', message: 'Conversation deleted from local storage.' });
+      setToast({ id: createId('toast'), tone: 'success', message: 'Conversation removed from this device.' });
     } catch (error) {
       setToast({ id: createId('toast'), tone: 'error', message: toReadableError(error) });
     }
@@ -347,6 +377,7 @@ export default function App() {
       setProgressValue(0);
       setProgressText('Local data cleared.');
       setCachedModel(false);
+      setSidebarTab('settings');
       setToast({ id: createId('toast'), tone: 'success', message: 'Everything local was cleared.' });
     } catch (error) {
       setToast({ id: createId('toast'), tone: 'error', message: toReadableError(error) });
@@ -368,73 +399,103 @@ export default function App() {
     setToast({ id: createId('toast'), tone: 'info', message: 'Install prompt is not available here.' });
   }
 
-  const supportIssues = [
-    !support.hasWebGpu ? 'WebGPU missing' : null,
-    !support.hasWorker ? 'Workers missing' : null,
-    !support.hasIndexedDb ? 'IndexedDB missing' : null,
-  ].filter((issue): issue is string => Boolean(issue));
+  const composerPlaceholder = !support.supported
+    ? 'Open Settings and use a supported browser/device for offline chat.'
+    : cachedModel || engineState === 'ready'
+      ? 'Message Zaya…'
+      : 'Open Settings to finish offline setup…';
 
   return (
     <>
       <div className="app-shell">
-        <Header engineState={engineState} online={online} cachedModel={cachedModel} />
+        <Header
+          engineState={engineState}
+          online={online}
+          cachedModel={cachedModel}
+          panelOpen={panelOpen}
+          onTogglePanel={() => setPanelOpen((current) => !current)}
+          onOpenSettings={() => openSidebarTab('settings')}
+          onCreateChat={createConversation}
+        />
 
-        {!isStandalone ? (
-          <InstallCard canPrompt={canPrompt} showIosHint={showIosHint} onInstall={handleInstall} />
-        ) : null}
+        <div className="workspace">
+          <div
+            className={`panel-backdrop ${panelOpen ? 'is-visible' : ''}`}
+            onClick={closeMobilePanel}
+            aria-hidden={!panelOpen}
+          />
 
-        {!support.supported ? (
-          <section className="card warning-card">
-            <p className="eyebrow">Runtime block</p>
-            <h2>This browser is not ready for local inference</h2>
-            <p>
-              Zaya Pocket needs WebGPU, Web Workers, and IndexedDB together. Right now this runtime is missing:
-            </p>
-            <ul>
-              {supportIssues.map((issue) => (
-                <li key={issue}>{issue}</li>
-              ))}
-            </ul>
-          </section>
-        ) : null}
-
-        <main className="layout-grid">
-          <aside className="layout-sidebar stack-lg">
-            <ModelPanel
-              selectedModelId={selectedModelId}
-              onSelect={setSelectedModelId}
-              onWarmup={warmupModel}
-              onDeleteCache={deleteModelCache}
-              progressText={progressText}
-              progressValue={progressValue}
-              cached={cachedModel}
-              busy={engineState === 'loading' || generating}
-            />
-
-            <ConversationList
-              conversations={conversations}
-              activeConversationId={activeConversationId}
-              onSelect={setActiveConversationId}
-              onCreate={createConversation}
-              onDelete={removeConversation}
-            />
-
-            <section className="card stack-md">
-              <div>
-                <p className="eyebrow">Ground rules</p>
-                <h2>Local-first by default</h2>
-                <p>
-                  The app shell and your chat history stay on the device. The first model load still needs a download before fully offline use.
-                </p>
+          <aside className={`side-panel ${panelOpen ? 'side-panel--open' : ''}`} aria-label="Zaya sidebar">
+            <div className="side-panel__header">
+              <div className="tab-switcher" role="tablist" aria-label="Sidebar sections">
+                <button
+                  type="button"
+                  className={`tab-switcher__button ${sidebarTab === 'chats' ? 'is-active' : ''}`}
+                  role="tab"
+                  aria-selected={sidebarTab === 'chats'}
+                  onClick={() => setSidebarTab('chats')}
+                >
+                  Chats
+                </button>
+                <button
+                  type="button"
+                  className={`tab-switcher__button ${sidebarTab === 'settings' ? 'is-active' : ''}`}
+                  role="tab"
+                  aria-selected={sidebarTab === 'settings'}
+                  onClick={() => setSidebarTab('settings')}
+                >
+                  Settings
+                </button>
               </div>
-              <button className="button button--ghost" onClick={() => void wipeAllLocalData()}>
-                Clear all local data
+              <button type="button" className="icon-button mobile-only" onClick={closeMobilePanel} aria-label="Close panel">
+                ×
               </button>
-            </section>
+            </div>
+
+            <div className="side-panel__content">
+              {sidebarTab === 'chats' ? (
+                <ConversationList
+                  conversations={conversations}
+                  activeConversationId={activeConversationId}
+                  onSelect={(id) => {
+                    setActiveConversationId(id);
+                    closeMobilePanel();
+                  }}
+                  onCreate={createConversation}
+                  onDelete={removeConversation}
+                />
+              ) : (
+                <SettingsSheet
+                  selectedModelId={selectedModelId}
+                  onSelectModel={setSelectedModelId}
+                  onWarmupModel={warmupModel}
+                  onDeleteCache={deleteModelCache}
+                  onClearLocalData={wipeAllLocalData}
+                  progressText={progressText}
+                  progressValue={progressValue}
+                  cachedModel={cachedModel}
+                  busy={engineState === 'loading' || generating}
+                  support={support}
+                  engineState={engineState}
+                  online={online}
+                  isStandalone={isStandalone}
+                  canPromptInstall={canPrompt}
+                  showIosHint={showIosHint}
+                  onInstall={handleInstall}
+                />
+              )}
+            </div>
           </aside>
 
-          <section className="layout-main stack-lg">
-            <MessageList messages={messages} loading={generating} />
+          <main className="chat-stage">
+            <MessageList
+              messages={messages}
+              loading={generating}
+              supported={support.supported}
+              cachedModel={cachedModel}
+              onOpenSettings={() => openSidebarTab('settings')}
+              onCreateChat={createConversation}
+            />
             <Composer
               value={draft}
               onChange={setDraft}
@@ -442,9 +503,10 @@ export default function App() {
               onStop={stopGeneration}
               disabled={!support.supported || engineState === 'loading'}
               generating={generating}
+              placeholder={composerPlaceholder}
             />
-          </section>
-        </main>
+          </main>
+        </div>
       </div>
 
       <Toast toast={toast} />
