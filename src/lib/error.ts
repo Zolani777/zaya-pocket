@@ -28,7 +28,8 @@ function extractMessage(value: unknown): string | null {
       extractMessage(record.error) ??
       extractMessage(record.details) ??
       extractMessage(record.cause) ??
-      extractMessage(record.description);
+      extractMessage(record.description) ??
+      extractMessage(record.statusText);
 
     if (direct) return direct;
 
@@ -73,9 +74,14 @@ export function toReadableError(error: unknown): string {
     normalized.includes('adapter') ||
     normalized.includes('shader-f16') ||
     normalized.includes('device was lost') ||
-    normalized.includes('device lost')
+    normalized.includes('device lost') ||
+    normalized.includes('gpu error')
   ) {
     return 'This phone could not keep the local AI engine running. Reopen the app and use the Starter model.';
+  }
+
+  if (normalized.includes('repeatedly occurred') || normalized.includes('crash') || normalized.includes('interrupted while')) {
+    return 'Setup was interrupted before the local engine finished loading. Reopen settings and resume setup.';
   }
 
   if (normalized.includes('abort')) {
@@ -94,8 +100,12 @@ export function toReadableError(error: unknown): string {
     return 'Some offline model files could not be found during setup.';
   }
 
-  if (normalized.includes('cache')) {
+  if (normalized.includes('cache') || normalized.includes('indexeddb')) {
     return 'The offline model cache could not be prepared correctly.';
+  }
+
+  if (normalized.includes('internet once') || normalized.includes('internet connection')) {
+    return 'Connect to the internet once so the phone can finish the first offline download.';
   }
 
   return message;

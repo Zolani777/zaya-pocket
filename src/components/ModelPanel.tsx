@@ -19,6 +19,9 @@ function getButtonLabel(engineState: EngineState, cached: boolean): string {
   if (engineState === 'verifying') return 'Verifying…';
   if (engineState === 'loading') return 'Loading cached model…';
   if (engineState === 'initializing') return 'Initializing…';
+  if (engineState === 'interrupted') return cached ? 'Resume loading cached model' : 'Restart offline setup';
+  if (engineState === 'failed') return cached ? 'Try loading downloaded model again' : 'Retry offline setup';
+  if (engineState === 'downloaded') return 'Load downloaded model';
   if (engineState === 'ready' || engineState === 'generating') return 'Offline model is ready';
   return cached ? 'Load downloaded model' : 'Download offline model';
 }

@@ -29,10 +29,12 @@ interface SettingsSheetProps {
 function describeState(engineState: EngineState, cachedModel: boolean, engineReady: boolean): string {
   if (engineState === 'downloading') return 'downloading';
   if (engineState === 'verifying') return 'verifying';
+  if (engineState === 'downloaded') return 'downloaded';
   if (engineState === 'loading') return 'loading';
   if (engineState === 'initializing') return 'initializing';
   if (engineState === 'generating') return 'replying';
-  if (engineState === 'error') return 'needs attention';
+  if (engineState === 'failed') return 'failed';
+  if (engineState === 'interrupted') return 'interrupted';
   if (engineReady || engineState === 'ready') return 'ready';
   return cachedModel ? 'downloaded' : 'idle';
 }

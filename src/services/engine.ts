@@ -19,15 +19,15 @@ function classifyPhase(progress: InitProgressReport): { phase: SetupPhase; text:
   const rawText = (progress.text || '').trim();
   const source = rawText.toLowerCase();
 
-  if (/fetching param cache|downloading|tokenizer|params/i.test(source)) {
+  if (/fetching param cache|downloading|download model|tokenizer|params|artifact/i.test(source)) {
     return { phase: 'downloading', text: 'Downloading offline model…' };
   }
 
-  if (/loading model from cache/i.test(source)) {
+  if (/loading model from cache|load model|cache hit|reload/i.test(source)) {
     return { phase: 'loading', text: 'Loading cached model…' };
   }
 
-  if (/shader|pipeline|webgpu|gpu/i.test(source)) {
+  if (/shader|pipeline|webgpu|gpu|device|compil/i.test(source)) {
     return { phase: 'initializing', text: 'Initializing local engine…' };
   }
 
@@ -162,7 +162,11 @@ class ZayaEngine {
         this.engine.setInitProgressCallback(progressCallback);
 
         if (this.activeModelId !== modelId) {
-          progressCallback({ progress: 0.6, timeElapsed: 0, text: 'Loading model from cache[0/1]: 0MB loaded. 0% completed, 0 secs elapsed.' });
+          progressCallback({
+            progress: 0.6,
+            timeElapsed: 0,
+            text: 'Loading model from cache[0/1]: 0MB loaded. 0% completed, 0 secs elapsed.',
+          });
           await this.engine.reload(modelId);
           this.activeModelId = modelId;
         }
@@ -270,10 +274,15 @@ class ZayaEngine {
 
     if (delta && typeof delta === 'object') {
       const record = delta as Record<string, unknown>;
+
       if (typeof record.text === 'string') return record.text;
       if (typeof record.content === 'string') return record.content;
       if (Array.isArray(record.content)) return this.normalizeDelta(record.content);
       if (typeof record.delta === 'string') return record.delta;
+      if (typeof record.value === 'string') return record.value;
+      if (typeof record.output_text === 'string') return record.output_text;
+      if (Array.isArray(record.parts)) return this.normalizeDelta(record.parts);
+      if (Array.isArray(record.items)) return this.normalizeDelta(record.items);
     }
 
     return '';
