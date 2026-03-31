@@ -2,20 +2,20 @@ import type { ModelOption } from '@/types/chat';
 
 export const MODEL_OPTIONS: ModelOption[] = [
   {
-    id: 'Llama-3.2-1B-Instruct-q4f16_1-MLC',
+    id: 'Qwen2.5-0.5B-Instruct-q4f16_1-MLC',
     name: 'Starter',
-    sizeLabel: 'Llama 3.2 1B',
-    memoryLabel: 'About 1 GB download',
-    description: 'Best first setup for most phones. Faster startup and lighter local use.',
+    sizeLabel: 'Qwen 2.5 0.5B',
+    memoryLabel: 'Smaller download and lighter startup',
+    description: 'Safest first setup for iPhone. This build favors stability over maximum quality.',
     recommended: true,
   },
   {
-    id: 'Llama-3.2-3B-Instruct-q4f16_1-MLC',
+    id: 'Llama-3.2-1B-Instruct-q4f16_1-MLC',
     name: 'Enhanced',
-    sizeLabel: 'Llama 3.2 3B',
-    memoryLabel: 'About 2.3 GB download',
-    description: 'Sharper replies, but heavier. Use this after Starter is stable on your device.',
-    caution: 'Can take longer to download and warm up on mobile hardware.',
+    sizeLabel: 'Llama 3.2 1B',
+    memoryLabel: 'Larger download and heavier startup',
+    description: 'Use this only after Starter proves stable on your device.',
+    caution: 'Can still be too heavy for some iPhone Home Screen sessions.',
   },
 ];
 

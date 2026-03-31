@@ -6,7 +6,7 @@ import { MessageList } from '@/components/MessageList';
 import { Composer } from '@/components/Composer';
 import { Toast } from '@/components/Toast';
 import { buildSystemPrompt } from '@/config/persona';
-import { DEFAULT_MODEL_ID } from '@/constants/models';
+import { DEFAULT_MODEL_ID, MODEL_OPTIONS } from '@/constants/models';
 import { createId } from '@/lib/id';
 import { getRuntimeSupport } from '@/lib/runtime';
 import {
@@ -27,29 +27,29 @@ import type {
   ConversationRecord,
   EngineBootProgress,
   EngineState,
+  PersistedSetupState,
   SetupPhase,
-  SetupSession,
+  SetupSessionRecord,
   ToastState,
 } from '@/types/chat';
 import './styles.css';
 
 const ACTIVE_CONVERSATION_KEY = 'activeConversationId';
 const SELECTED_MODEL_KEY = 'selectedModelId';
-const SETUP_SESSIONS_STORAGE_KEY = 'zaya-pocket.setup-sessions.v1';
-const IDLE_PROGRESS_TEXT = 'Offline setup has not been started yet.';
-const DOWNLOADED_PROGRESS_TEXT = 'Download complete. Tap Load downloaded model to finish local setup.';
+const SETUP_SESSION_STORAGE_KEY = 'zayaPocket.setupSessions.v1';
+const DEFAULT_IDLE_TEXT = 'Offline setup has not been started yet.';
+const DEFAULT_DOWNLOADED_TEXT = 'Downloaded model found. Load it to finish starting the local engine.';
+const DEFAULT_READY_TEXT = 'Offline model is ready on this device.';
+
+type SetupSessionMap = Record<string, SetupSessionRecord>;
 
 const PHASE_PROGRESS: Record<SetupPhase, [number, number]> = {
-  downloading: [0, 0.72],
+  downloading: [0.02, 0.72],
   verifying: [0.72, 0.8],
   loading: [0.8, 0.9],
   initializing: [0.9, 0.98],
   ready: [1, 1],
 };
-
-const DOWNLOADED_PROGRESS_VALUE = PHASE_PROGRESS.verifying[1];
-
-type SetupSessionMap = Record<string, SetupSession>;
 
 function clampProgress(value: number): number {
   if (Number.isNaN(value)) return 0;
@@ -70,237 +70,23 @@ function isBusyState(state: EngineState): boolean {
   return isSetupState(state) || state === 'generating';
 }
 
-function nowIso(): string {
-  return new Date().toISOString();
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
-}
-
-function parseStoredSetupSession(value: unknown): SetupSession | null {
-  if (!isRecord(value)) return null;
-  if (typeof value.modelId !== 'string' || typeof value.state !== 'string' || typeof value.progressText !== 'string') {
-    return null;
-  }
-
-  const cachedModel = value.cachedModel === true;
-  const engineReady = value.engineReady === true;
-  const progressValue = clampProgress(typeof value.progressValue === 'number' ? value.progressValue : 0);
-  const updatedAt = typeof value.updatedAt === 'string' && value.updatedAt ? value.updatedAt : nowIso();
-  const completedAt = typeof value.completedAt === 'string' && value.completedAt ? value.completedAt : undefined;
-  const lastError = typeof value.lastError === 'string' && value.lastError ? value.lastError : undefined;
-
-  return {
-    modelId: value.modelId,
-    state: value.state as EngineState,
-    progressValue,
-    progressText: value.progressText,
-    cachedModel,
-    engineReady,
-    updatedAt,
-    lastError,
-    completedAt,
-  };
-}
-
-function readSetupSessionMap(): SetupSessionMap {
-  if (typeof window === 'undefined') return {};
-
-  try {
-    const raw = window.localStorage.getItem(SETUP_SESSIONS_STORAGE_KEY);
-    if (!raw) return {};
-
-    const parsed = JSON.parse(raw) as unknown;
-    if (!isRecord(parsed)) return {};
-
-    const entries = Object.entries(parsed)
-      .map(([modelId, value]) => {
-        const session = parseStoredSetupSession(value);
-        if (!session || session.modelId !== modelId) return null;
-        return [modelId, session] as const;
-      })
-      .filter((entry): entry is readonly [string, SetupSession] => Boolean(entry));
-
-    return Object.fromEntries(entries);
-  } catch {
-    return {};
-  }
-}
-
-function writeSetupSessionMap(map: SetupSessionMap): void {
-  if (typeof window === 'undefined') return;
-
-  try {
-    window.localStorage.setItem(SETUP_SESSIONS_STORAGE_KEY, JSON.stringify(map));
-  } catch {
-    // ignore persistence failures and keep runtime moving
-  }
-}
-
-function readPersistedSetupSession(modelId: string): SetupSession | null {
-  return readSetupSessionMap()[modelId] ?? null;
-}
-
-function writePersistedSetupSession(session: SetupSession): void {
-  const map = readSetupSessionMap();
-  map[session.modelId] = session;
-  writeSetupSessionMap(map);
-}
-
-function clearPersistedSetupSessions(modelId?: string): void {
-  if (!modelId) {
-    writeSetupSessionMap({});
-    return;
-  }
-
-  const map = readSetupSessionMap();
-  delete map[modelId];
-  writeSetupSessionMap(map);
-}
-
-function getInterruptedPhaseLabel(state: EngineState): string {
-  if (state === 'downloading') return 'downloading the offline model';
-  if (state === 'verifying') return 'verifying the downloaded files';
-  if (state === 'loading') return 'loading the cached model';
-  if (state === 'initializing') return 'initializing the local engine';
-  return 'setting up the offline model';
-}
-
-function getInterruptedText(previousState: EngineState, cachedModel: boolean): string {
-  const phase = getInterruptedPhaseLabel(previousState);
-  return cachedModel
-    ? `Setup was interrupted while ${phase}. The download is still on this device.`
-    : `Setup was interrupted while ${phase}. Start the setup again.`;
-}
-
-function getFailedText(cachedModel: boolean): string {
-  return cachedModel
-    ? 'Loading the downloaded model failed. Try loading it again.'
-    : 'Offline setup failed before the first download finished. Try again.';
-}
-
-function createSetupSession(
-  modelId: string,
-  state: EngineState,
-  overrides: Partial<Omit<SetupSession, 'modelId' | 'state'>> = {},
-): SetupSession {
-  return {
-    modelId,
-    state,
-    progressValue: 0,
-    progressText: IDLE_PROGRESS_TEXT,
-    cachedModel: false,
-    engineReady: false,
-    updatedAt: nowIso(),
-    ...overrides,
-  };
-}
-
-function createIdleSession(modelId: string): SetupSession {
-  return createSetupSession(modelId, 'idle', {
-    progressValue: 0,
-    progressText: IDLE_PROGRESS_TEXT,
-    cachedModel: false,
-    engineReady: false,
-    lastError: undefined,
-    completedAt: undefined,
-  });
-}
-
-function createDownloadedSession(modelId: string, previous: SetupSession | null): SetupSession {
-  return createSetupSession(modelId, 'downloaded', {
-    progressValue: Math.max(previous?.progressValue ?? 0, DOWNLOADED_PROGRESS_VALUE),
-    progressText: DOWNLOADED_PROGRESS_TEXT,
-    cachedModel: true,
-    engineReady: false,
-    lastError: previous?.lastError,
-    completedAt: previous?.completedAt,
-  });
-}
-
-function createReadySession(modelId: string, previous: SetupSession | null): SetupSession {
-  return createSetupSession(modelId, 'ready', {
-    progressValue: 1,
-    progressText: 'Offline model is ready on this device.',
-    cachedModel: true,
-    engineReady: true,
-    lastError: undefined,
-    completedAt: nowIso(),
-  });
-}
-
-function createFailedSession(modelId: string, cachedModel: boolean, lastError: string, previous: SetupSession | null): SetupSession {
-  return createSetupSession(modelId, 'failed', {
-    progressValue: cachedModel ? Math.max(previous?.progressValue ?? 0, DOWNLOADED_PROGRESS_VALUE) : previous?.progressValue ?? 0,
-    progressText: getFailedText(cachedModel),
-    cachedModel,
-    engineReady: false,
-    lastError,
-    completedAt: previous?.completedAt,
-  });
-}
-
-function createInterruptedSession(modelId: string, cachedModel: boolean, previous: SetupSession): SetupSession {
-  return createSetupSession(modelId, 'interrupted', {
-    progressValue: cachedModel ? Math.max(previous.progressValue, DOWNLOADED_PROGRESS_VALUE) : previous.progressValue,
-    progressText: getInterruptedText(previous.state, cachedModel),
-    cachedModel,
-    engineReady: false,
-    lastError: previous.lastError,
-    completedAt: previous.completedAt,
-  });
-}
-
-function reconcileSetupSession(args: {
-  modelId: string;
-  cachedModel: boolean;
-  engineReady: boolean;
-  storedSession: SetupSession | null;
-}): SetupSession {
-  const { modelId, cachedModel, engineReady, storedSession } = args;
-
-  if (engineReady) {
-    return createReadySession(modelId, storedSession);
-  }
-
-  if (storedSession && isSetupState(storedSession.state)) {
-    const interrupted = createInterruptedSession(modelId, cachedModel, storedSession);
-    writePersistedSetupSession(interrupted);
-    return interrupted;
-  }
-
-  if (cachedModel) {
-    if (storedSession?.state === 'interrupted') {
-      return { ...storedSession, cachedModel: true, engineReady: false, progressValue: Math.max(storedSession.progressValue, DOWNLOADED_PROGRESS_VALUE), updatedAt: nowIso() };
-    }
-
-    if (storedSession?.state === 'failed') {
-      return { ...storedSession, cachedModel: true, engineReady: false, progressValue: Math.max(storedSession.progressValue, DOWNLOADED_PROGRESS_VALUE), updatedAt: nowIso() };
-    }
-
-    return createDownloadedSession(modelId, storedSession);
-  }
-
-  if (storedSession?.state === 'interrupted') {
-    return { ...storedSession, cachedModel: false, engineReady: false, updatedAt: nowIso() };
-  }
-
-  if (storedSession?.state === 'failed') {
-    return { ...storedSession, cachedModel: false, engineReady: false, updatedAt: nowIso() };
-  }
-
-  return createIdleSession(modelId);
-}
-
 function getHeaderStatusLabel(engineState: EngineState, online: boolean, chatUnlocked: boolean): string {
   if (chatUnlocked) return 'ready';
-  if (engineState === 'interrupted') return 'resume setup';
-  if (engineState === 'failed') return 'needs attention';
-  if (engineState === 'downloaded') return 'downloaded';
   if (!online && engineState === 'idle') return 'offline';
+  if (engineState === 'interrupted') return 'interrupted';
+  if (engineState === 'downloaded') return 'downloaded';
+  if (engineState === 'error') return 'needs attention';
   if (isSetupState(engineState)) return 'setting up';
   return 'setup needed';
+}
+
+function getComposerPlaceholder(engineState: EngineState, chatUnlocked: boolean): string {
+  if (chatUnlocked) return 'Message Zaya…';
+  if (engineState === 'downloaded') return 'Finish loading the downloaded model in Offline setup…';
+  if (engineState === 'interrupted') return 'Offline setup was interrupted. Reopen settings and continue…';
+  if (engineState === 'error') return 'Offline setup needs attention. Reopen settings to retry…';
+  if (isSetupState(engineState)) return 'Offline setup is still running…';
+  return 'Open Offline setup to finish the first download…';
 }
 
 function createConversationRecord(modelId: string): ConversationRecord {
@@ -313,6 +99,214 @@ function createConversationRecord(modelId: string): ConversationRecord {
     modelId,
     lastMessagePreview: '',
   };
+}
+
+function normalizeModelId(modelId: string): string {
+  return MODEL_OPTIONS.some((model) => model.id === modelId) ? modelId : DEFAULT_MODEL_ID;
+}
+
+function isLocalStorageAvailable(): boolean {
+  try {
+    return typeof window !== 'undefined' && 'localStorage' in window;
+  } catch {
+    return false;
+  }
+}
+
+function readSetupSessions(): SetupSessionMap {
+  if (!isLocalStorageAvailable()) return {};
+
+  try {
+    const raw = window.localStorage.getItem(SETUP_SESSION_STORAGE_KEY);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw) as SetupSessionMap;
+    return parsed && typeof parsed === 'object' ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+function writeSetupSessions(next: SetupSessionMap): void {
+  if (!isLocalStorageAvailable()) return;
+
+  try {
+    window.localStorage.setItem(SETUP_SESSION_STORAGE_KEY, JSON.stringify(next));
+  } catch {
+    // ignore localStorage write failures on constrained browsers
+  }
+}
+
+function readSetupSession(modelId: string): SetupSessionRecord | null {
+  const normalizedModelId = normalizeModelId(modelId);
+  return readSetupSessions()[normalizedModelId] ?? null;
+}
+
+function saveSetupSession(session: SetupSessionRecord): void {
+  const sessions = readSetupSessions();
+  sessions[session.modelId] = session;
+  writeSetupSessions(sessions);
+}
+
+function clearSetupSession(modelId?: string): void {
+  if (!isLocalStorageAvailable()) return;
+
+  if (!modelId) {
+    window.localStorage.removeItem(SETUP_SESSION_STORAGE_KEY);
+    return;
+  }
+
+  const normalizedModelId = normalizeModelId(modelId);
+  const sessions = readSetupSessions();
+  delete sessions[normalizedModelId];
+  writeSetupSessions(sessions);
+}
+
+function createSetupSession(input: {
+  modelId: string;
+  phase: PersistedSetupState;
+  progressValue: number;
+  progressText: string;
+  cached: boolean;
+  engineReady: boolean;
+  completedSetup: boolean;
+  errorMessage?: string | null;
+}): SetupSessionRecord {
+  return {
+    modelId: normalizeModelId(input.modelId),
+    phase: input.phase,
+    progressValue: clampProgress(input.progressValue),
+    progressText: input.progressText,
+    cached: input.cached,
+    engineReady: input.engineReady,
+    completedSetup: input.completedSetup,
+    updatedAt: new Date().toISOString(),
+    errorMessage: input.errorMessage ?? null,
+  };
+}
+
+function getInterruptedText(previousPhase: PersistedSetupState, cached: boolean): string {
+  const phaseLabel: Record<PersistedSetupState, string> = {
+    idle: 'starting the first download',
+    downloading: 'downloading the offline model',
+    verifying: 'verifying downloaded files',
+    downloaded: 'preparing the downloaded model',
+    loading: 'loading the cached model',
+    initializing: 'initializing the local engine',
+    ready: 'keeping the local engine ready',
+    interrupted: 'resuming setup',
+    error: 'recovering from a setup error',
+  };
+
+  const suffix = cached
+    ? ' Downloaded files were found, so you can resume from settings.'
+    : ' The download did not finish cleanly, so start setup again from settings.';
+
+  return `Offline setup was interrupted while ${phaseLabel[previousPhase]}.${suffix}`;
+}
+
+function deriveRecoveredSession(modelId: string, cached: boolean, ready: boolean, previous: SetupSessionRecord | null): SetupSessionRecord {
+  if (ready) {
+    return createSetupSession({
+      modelId,
+      phase: 'ready',
+      progressValue: 1,
+      progressText: DEFAULT_READY_TEXT,
+      cached: true,
+      engineReady: true,
+      completedSetup: true,
+      errorMessage: null,
+    });
+  }
+
+  if (previous) {
+    switch (previous.phase) {
+      case 'downloading':
+      case 'verifying':
+      case 'loading':
+      case 'initializing':
+        return createSetupSession({
+          modelId,
+          phase: 'interrupted',
+          progressValue: previous.progressValue,
+          progressText: getInterruptedText(previous.phase, cached),
+          cached,
+          engineReady: false,
+          completedSetup: previous.completedSetup,
+          errorMessage: previous.errorMessage ?? null,
+        });
+      case 'ready':
+        return createSetupSession({
+          modelId,
+          phase: cached ? 'downloaded' : 'idle',
+          progressValue: cached ? PHASE_PROGRESS.verifying[1] : 0,
+          progressText: cached ? DEFAULT_DOWNLOADED_TEXT : DEFAULT_IDLE_TEXT,
+          cached,
+          engineReady: false,
+          completedSetup: true,
+          errorMessage: null,
+        });
+      case 'downloaded':
+        return createSetupSession({
+          modelId,
+          phase: cached ? 'downloaded' : 'idle',
+          progressValue: cached ? Math.max(previous.progressValue, PHASE_PROGRESS.verifying[1]) : 0,
+          progressText: cached ? previous.progressText || DEFAULT_DOWNLOADED_TEXT : DEFAULT_IDLE_TEXT,
+          cached,
+          engineReady: false,
+          completedSetup: previous.completedSetup,
+          errorMessage: previous.errorMessage ?? null,
+        });
+      case 'interrupted':
+        return createSetupSession({
+          modelId,
+          phase: 'interrupted',
+          progressValue: previous.progressValue,
+          progressText: previous.progressText || getInterruptedText('loading', cached),
+          cached,
+          engineReady: false,
+          completedSetup: previous.completedSetup,
+          errorMessage: previous.errorMessage ?? null,
+        });
+      case 'error':
+        return createSetupSession({
+          modelId,
+          phase: 'error',
+          progressValue: previous.progressValue,
+          progressText: previous.progressText || 'Offline setup failed. Try again.',
+          cached,
+          engineReady: false,
+          completedSetup: previous.completedSetup,
+          errorMessage: previous.errorMessage ?? null,
+        });
+      case 'idle':
+      default:
+        break;
+    }
+  }
+
+  if (cached) {
+    return createSetupSession({
+      modelId,
+      phase: 'downloaded',
+      progressValue: PHASE_PROGRESS.verifying[1],
+      progressText: DEFAULT_DOWNLOADED_TEXT,
+      cached: true,
+      engineReady: false,
+      completedSetup: previous?.completedSetup ?? false,
+      errorMessage: null,
+    });
+  }
+
+  return createSetupSession({
+    modelId,
+    phase: 'idle',
+    progressValue: 0,
+    progressText: DEFAULT_IDLE_TEXT,
+    cached: false,
+    engineReady: false,
+    completedSetup: false,
+    errorMessage: null,
+  });
 }
 
 export default function App() {
@@ -328,21 +322,23 @@ export default function App() {
   const [selectedModelId, setSelectedModelId] = useState(DEFAULT_MODEL_ID);
   const [cachedModel, setCachedModel] = useState(false);
   const [progressValue, setProgressValue] = useState(0);
-  const [progressText, setProgressText] = useState(IDLE_PROGRESS_TEXT);
+  const [progressText, setProgressText] = useState(DEFAULT_IDLE_TEXT);
   const [toast, setToast] = useState<ToastState | null>(null);
   const [generating, setGenerating] = useState(false);
   const [bootstrapped, setBootstrapped] = useState(false);
-  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(true);
+  const [setupSession, setSetupSession] = useState<SetupSessionRecord | null>(null);
 
   const selectedModelIdRef = useRef(selectedModelId);
   const conversationsRef = useRef(conversations);
   const activeConversationIdRef = useRef(activeConversationId);
   const messagesRef = useRef(messages);
   const generatingRef = useRef(generating);
+  const cachedModelRef = useRef(cachedModel);
+  const setupSessionRef = useRef<SetupSessionRecord | null>(setupSession);
   const warmupPromiseRef = useRef<Promise<void> | null>(null);
   const warmupModelIdRef = useRef<string | null>(null);
   const autoLoadAttemptRef = useRef<string>('');
-  const setupSessionRef = useRef<SetupSession | null>(null);
 
   useEffect(() => {
     selectedModelIdRef.current = selectedModelId;
@@ -364,54 +360,66 @@ export default function App() {
     generatingRef.current = generating;
   }, [generating]);
 
-  const checkModelCached = useCallback(async (modelId: string) => {
+  useEffect(() => {
+    cachedModelRef.current = cachedModel;
+  }, [cachedModel]);
+
+  useEffect(() => {
+    setupSessionRef.current = setupSession;
+  }, [setupSession]);
+
+  const persistSetupSession = useCallback((session: SetupSessionRecord | null) => {
+    setupSessionRef.current = session;
+    setSetupSession(session);
+    if (!session) {
+      clearSetupSession(selectedModelIdRef.current);
+      return;
+    }
+    saveSetupSession(session);
+  }, []);
+
+  const refreshCachedModel = useCallback(async (modelId: string) => {
     try {
-      return await zayaEngine.isModelCached(modelId);
+      const cached = await zayaEngine.isModelCached(modelId);
+      if (selectedModelIdRef.current === modelId) {
+        setCachedModel(cached);
+      }
+      return cached;
     } catch {
+      if (selectedModelIdRef.current === modelId) {
+        setCachedModel(false);
+      }
       return false;
     }
   }, []);
 
-  const applySetupSession = useCallback((session: SetupSession, options: { persist?: boolean } = {}) => {
-    setupSessionRef.current = session;
-
-    if (options.persist !== false) {
-      writePersistedSetupSession(session);
-    }
-
-    if (selectedModelIdRef.current === session.modelId) {
-      setEngineState(session.state);
-      setEngineReady(session.engineReady);
-      setCachedModel(session.cachedModel);
-      setProgressValue(session.progressValue);
-      setProgressText(session.progressText);
-    }
+  const applySessionToUi = useCallback((session: SetupSessionRecord) => {
+    if (selectedModelIdRef.current !== session.modelId) return;
+    setEngineState(session.phase === 'ready' && !session.engineReady ? 'downloaded' : session.phase);
+    setEngineReady(session.engineReady);
+    setProgressValue(clampProgress(session.progressValue));
+    setProgressText(session.progressText);
+    setCachedModel(session.cached);
   }, []);
 
-  const reconcileCurrentModel = useCallback(async (modelId: string, options: { openSettingsOnProblem?: boolean } = {}) => {
-    const engineReadyNow = zayaEngine.isReady(modelId);
-    const cachedModelNow = await checkModelCached(modelId);
-    const storedSession = readPersistedSetupSession(modelId);
-    const reconciled = reconcileSetupSession({
-      modelId,
-      cachedModel: cachedModelNow,
-      engineReady: engineReadyNow,
-      storedSession,
-    });
+  const reconcileModelState = useCallback(async (modelId: string) => {
+    const cached = await refreshCachedModel(modelId);
+    const ready = zayaEngine.isReady(modelId);
+    const previous = readSetupSession(modelId);
+    const recovered = deriveRecoveredSession(modelId, cached, ready, previous);
+    persistSetupSession(recovered);
+    applySessionToUi(recovered);
+    return recovered;
+  }, [applySessionToUi, persistSetupSession, refreshCachedModel]);
 
-    applySetupSession(reconciled);
-
-    if (options.openSettingsOnProblem && (reconciled.state === 'interrupted' || reconciled.state === 'failed')) {
-      setSettingsOpen(true);
-    }
-
-    return reconciled;
-  }, [applySetupSession, checkModelCached]);
+  const updateCurrentSession = useCallback((session: SetupSessionRecord) => {
+    persistSetupSession(session);
+    applySessionToUi(session);
+  }, [applySessionToUi, persistSetupSession]);
 
   const loadMessages = useCallback(async (conversationId: string) => {
     try {
       const stored = await listMessages(conversationId);
-      messagesRef.current = stored;
       setMessages(stored);
     } catch (error) {
       setToast({ id: createId('toast'), tone: 'error', message: toReadableError(error) });
@@ -419,42 +427,37 @@ export default function App() {
   }, []);
 
   const ensureConversation = useCallback(async (modelId: string): Promise<ConversationRecord> => {
-    const active = conversationsRef.current.find((item) => item.id === activeConversationIdRef.current);
-    if (active && active.modelId === modelId) return active;
-
-    const existingForModel = conversationsRef.current.find((item) => item.modelId === modelId);
-    if (existingForModel) {
-      if (activeConversationIdRef.current !== existingForModel.id) {
-        activeConversationIdRef.current = existingForModel.id;
-        setActiveConversationId(existingForModel.id);
-        void loadMessages(existingForModel.id);
-      }
-      return existingForModel;
-    }
+    const existing = conversationsRef.current.find(
+      (item) => item.id === activeConversationIdRef.current && item.modelId === modelId,
+    );
+    if (existing) return existing;
 
     const created = createConversationRecord(modelId);
     await saveConversation(created);
     setConversations((current) => [created, ...current]);
-    conversationsRef.current = [created, ...conversationsRef.current];
-    activeConversationIdRef.current = created.id;
     setActiveConversationId(created.id);
-    messagesRef.current = [];
     setMessages([]);
     return created;
-  }, [loadMessages]);
+  }, []);
 
-  const handleBootProgress = useCallback((modelId: string, cachedAtStart: boolean, progress: EngineBootProgress) => {
-    applySetupSession(createSetupSession(modelId, progress.phase, {
+  const handleBootProgress = useCallback((modelId: string, progress: EngineBootProgress) => {
+    const cached = progress.phase === 'loading' || progress.phase === 'initializing' || cachedModelRef.current;
+    const nextSession = createSetupSession({
+      modelId,
+      phase: progress.phase,
       progressValue: mapPhaseProgress(progress.phase, progress.progress),
       progressText: progress.text,
-      cachedModel: cachedAtStart || progress.phase !== 'downloading',
+      cached,
       engineReady: false,
-      completedAt: setupSessionRef.current?.modelId === modelId ? setupSessionRef.current.completedAt : undefined,
-    }));
-  }, [applySetupSession]);
+      completedSetup: setupSessionRef.current?.completedSetup ?? false,
+      errorMessage: null,
+    });
 
-  const warmupModel = useCallback(async (options: { auto?: boolean; modelId?: string } = {}) => {
-    const targetModelId = options.modelId ?? selectedModelIdRef.current;
+    updateCurrentSession(nextSession);
+  }, [updateCurrentSession]);
+
+  const warmupModel = useCallback(async (options: { auto?: boolean; modelId?: string; silentError?: boolean } = {}) => {
+    const targetModelId = normalizeModelId(options.modelId ?? selectedModelIdRef.current);
 
     if (warmupPromiseRef.current) {
       if (warmupModelIdRef.current === targetModelId) {
@@ -464,7 +467,20 @@ export default function App() {
     }
 
     if (zayaEngine.isReady(targetModelId)) {
-      applySetupSession(createReadySession(targetModelId, setupSessionRef.current));
+      const readySession = createSetupSession({
+        modelId: targetModelId,
+        phase: 'ready',
+        progressValue: 1,
+        progressText: DEFAULT_READY_TEXT,
+        cached: true,
+        engineReady: true,
+        completedSetup: true,
+        errorMessage: null,
+      });
+      updateCurrentSession(readySession);
+      if (selectedModelIdRef.current === targetModelId) {
+        setSettingsOpen(false);
+      }
       return;
     }
 
@@ -473,56 +489,88 @@ export default function App() {
         throw new Error('This browser is missing the features needed for local AI.');
       }
 
-      const cachedAtStart = await checkModelCached(targetModelId);
+      const cached = await refreshCachedModel(targetModelId);
 
-      if (!online && !cachedAtStart) {
-        const offlineFailure = createFailedSession(
-          targetModelId,
-          false,
-          'Connect to the internet once to download the offline model.',
-          setupSessionRef.current?.modelId === targetModelId ? setupSessionRef.current : null,
-        );
-        applySetupSession(offlineFailure);
+      if (!online && !cached) {
+        const offlineErrorSession = createSetupSession({
+          modelId: targetModelId,
+          phase: 'error',
+          progressValue: 0,
+          progressText: 'You need an internet connection for the first offline model download.',
+          cached: false,
+          engineReady: false,
+          completedSetup: setupSessionRef.current?.completedSetup ?? false,
+          errorMessage: 'Connect to the internet once to download the offline model.',
+        });
+        updateCurrentSession(offlineErrorSession);
         throw new Error('Connect to the internet once to download the offline model.');
       }
 
-      try {
-        const startingSession = createSetupSession(targetModelId, cachedAtStart ? 'loading' : 'downloading', {
-          progressValue: cachedAtStart ? PHASE_PROGRESS.loading[0] : 0.02,
-          progressText: cachedAtStart ? 'Loading cached model…' : 'Downloading offline model…',
-          cachedModel: cachedAtStart,
-          engineReady: false,
-          completedAt: setupSessionRef.current?.modelId === targetModelId ? setupSessionRef.current.completedAt : undefined,
-        });
-        applySetupSession(startingSession);
+      const startingSession = createSetupSession({
+        modelId: targetModelId,
+        phase: cached ? 'loading' : 'downloading',
+        progressValue: cached ? PHASE_PROGRESS.loading[0] : PHASE_PROGRESS.downloading[0],
+        progressText: cached ? 'Loading cached model…' : 'Downloading offline model…',
+        cached,
+        engineReady: false,
+        completedSetup: setupSessionRef.current?.completedSetup ?? false,
+        errorMessage: null,
+      });
 
-        await zayaEngine.boot(targetModelId, (progress) => handleBootProgress(targetModelId, cachedAtStart, progress));
+      updateCurrentSession(startingSession);
+      setSettingsOpen(true);
+
+      try {
+        await zayaEngine.boot(targetModelId, (progress) => handleBootProgress(targetModelId, progress));
 
         if (!zayaEngine.isReady(targetModelId)) {
           throw new Error('The offline model finished setup, but it is not ready yet.');
         }
 
+        const cachedAfterBoot = await refreshCachedModel(targetModelId);
         await ensureConversation(targetModelId);
-        const readySession = createReadySession(targetModelId, setupSessionRef.current?.modelId === targetModelId ? setupSessionRef.current : null);
-        applySetupSession(readySession);
+
+        const readySession = createSetupSession({
+          modelId: targetModelId,
+          phase: 'ready',
+          progressValue: 1,
+          progressText: DEFAULT_READY_TEXT,
+          cached: cachedAfterBoot,
+          engineReady: true,
+          completedSetup: true,
+          errorMessage: null,
+        });
+
+        updateCurrentSession(readySession);
         autoLoadAttemptRef.current = targetModelId;
+        setSettingsOpen(false);
 
         if (!options.auto) {
-          setSettingsOpen(false);
           setToast({ id: createId('toast'), tone: 'success', message: 'Offline setup finished.' });
         }
       } catch (error) {
         console.error('Zaya offline setup failed', error);
-        autoLoadAttemptRef.current = '';
         const readable = toReadableError(error);
-        const cachedAfterFailure = await checkModelCached(targetModelId);
-        const failedSession = createFailedSession(
-          targetModelId,
-          cachedAfterFailure,
-          readable,
-          setupSessionRef.current?.modelId === targetModelId ? setupSessionRef.current : null,
-        );
-        applySetupSession(failedSession);
+        const cachedAfterFailure = await refreshCachedModel(targetModelId);
+        const interrupted = cachedAfterFailure || isSetupState(setupSessionRef.current?.phase ?? 'idle');
+        const failedSession = createSetupSession({
+          modelId: targetModelId,
+          phase: interrupted ? 'interrupted' : 'error',
+          progressValue: cachedAfterFailure
+            ? Math.max(setupSessionRef.current?.progressValue ?? PHASE_PROGRESS.verifying[1], PHASE_PROGRESS.verifying[1])
+            : setupSessionRef.current?.progressValue ?? 0,
+          progressText: interrupted
+            ? getInterruptedText(setupSessionRef.current?.phase ?? 'loading', cachedAfterFailure)
+            : 'Offline setup failed before the model became ready. Try again.',
+          cached: cachedAfterFailure,
+          engineReady: false,
+          completedSetup: setupSessionRef.current?.completedSetup ?? false,
+          errorMessage: readable,
+        });
+
+        updateCurrentSession(failedSession);
+        autoLoadAttemptRef.current = '';
+        setSettingsOpen(true);
         throw error;
       }
     })();
@@ -536,10 +584,12 @@ export default function App() {
     try {
       await warmupPromiseRef.current;
     } catch (error) {
-      setToast({ id: createId('toast'), tone: 'error', message: toReadableError(error) });
+      if (!options.silentError) {
+        setToast({ id: createId('toast'), tone: 'error', message: toReadableError(error) });
+      }
       throw error;
     }
-  }, [applySetupSession, checkModelCached, ensureConversation, handleBootProgress, online, support.supported]);
+  }, [ensureConversation, handleBootProgress, online, refreshCachedModel, support.supported, updateCurrentSession]);
 
   useEffect(() => {
     let cancelled = false;
@@ -554,17 +604,15 @@ export default function App() {
 
         if (cancelled) return;
 
-        selectedModelIdRef.current = savedModelId;
-        conversationsRef.current = savedConversations;
-        activeConversationIdRef.current = savedConversationId || savedConversations[0]?.id || '';
-
-        setSelectedModelId(savedModelId);
+        const normalizedModelId = normalizeModelId(savedModelId);
+        setSelectedModelId(normalizedModelId);
         setConversations(savedConversations);
-        setActiveConversationId(activeConversationIdRef.current);
+        setActiveConversationId(savedConversationId || savedConversations[0]?.id || '');
 
-        await reconcileCurrentModel(savedModelId, { openSettingsOnProblem: true });
-
+        const recovered = await reconcileModelState(normalizedModelId);
         if (cancelled) return;
+
+        setSettingsOpen(!recovered.engineReady);
         setBootstrapped(true);
       } catch (error) {
         if (cancelled) return;
@@ -577,7 +625,7 @@ export default function App() {
     return () => {
       cancelled = true;
     };
-  }, [reconcileCurrentModel]);
+  }, [reconcileModelState]);
 
   useEffect(() => {
     return () => {
@@ -586,8 +634,26 @@ export default function App() {
   }, []);
 
   useEffect(() => {
+    if (!bootstrapped) return;
+
+    void saveSetting(SELECTED_MODEL_KEY, selectedModelId);
+    autoLoadAttemptRef.current = '';
+
+    let cancelled = false;
+    void reconcileModelState(selectedModelId).then((recovered) => {
+      if (cancelled || selectedModelIdRef.current !== selectedModelId) return;
+      if (!recovered.engineReady) {
+        setSettingsOpen(true);
+      }
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [bootstrapped, reconcileModelState, selectedModelId]);
+
+  useEffect(() => {
     if (!activeConversationId) {
-      messagesRef.current = [];
       setMessages([]);
       return;
     }
@@ -598,25 +664,33 @@ export default function App() {
 
   useEffect(() => {
     if (!bootstrapped || !support.supported) return;
-    if (warmupPromiseRef.current || generatingRef.current) return;
     if (engineReady || zayaEngine.isReady(selectedModelId)) return;
-
-    const currentSession = setupSessionRef.current;
-    if (!currentSession || currentSession.modelId !== selectedModelId) return;
-    if (currentSession.state !== 'downloaded' || !currentSession.cachedModel || !currentSession.completedAt) return;
+    if (!cachedModel) {
+      autoLoadAttemptRef.current = '';
+      return;
+    }
+    if (isBusyState(engineState) || warmupPromiseRef.current) return;
     if (autoLoadAttemptRef.current === selectedModelId) return;
+    if (!setupSession?.completedSetup || setupSession.phase !== 'downloaded') return;
 
     autoLoadAttemptRef.current = selectedModelId;
-    void warmupModel({ auto: true, modelId: selectedModelId }).catch(() => {
-      // toast handled inside warmupModel
+    setSettingsOpen(true);
+    void warmupModel({ auto: true, modelId: selectedModelId, silentError: true }).catch(() => {
+      // errors already reflected in state reconciliation
     });
-  }, [bootstrapped, engineReady, selectedModelId, support.supported, warmupModel]);
+  }, [bootstrapped, cachedModel, engineReady, engineState, selectedModelId, setupSession, support.supported, warmupModel]);
 
   useEffect(() => {
     if (!bootstrapped) return;
 
     const handleResume = () => {
-      void reconcileCurrentModel(selectedModelIdRef.current, { openSettingsOnProblem: true });
+      const modelId = selectedModelIdRef.current;
+      void reconcileModelState(modelId).then((recovered) => {
+        if (!recovered.engineReady) {
+          autoLoadAttemptRef.current = '';
+          setSettingsOpen(true);
+        }
+      });
     };
 
     const handleVisibilityChange = () => {
@@ -626,15 +700,13 @@ export default function App() {
     };
 
     window.addEventListener('pageshow', handleResume);
-    window.addEventListener('focus', handleResume);
     document.addEventListener('visibilitychange', handleVisibilityChange);
 
     return () => {
       window.removeEventListener('pageshow', handleResume);
-      window.removeEventListener('focus', handleResume);
       document.removeEventListener('visibilitychange', handleVisibilityChange);
     };
-  }, [bootstrapped, reconcileCurrentModel]);
+  }, [bootstrapped, reconcileModelState]);
 
   useEffect(() => {
     if (!toast) return;
@@ -642,33 +714,29 @@ export default function App() {
     return () => window.clearTimeout(timer);
   }, [toast]);
 
-  async function handleSelectModel(modelId: string) {
-    if (modelId === selectedModelIdRef.current || isBusyState(engineState)) return;
-
-    try {
-      selectedModelIdRef.current = modelId;
-      setSelectedModelId(modelId);
-      await saveSetting(SELECTED_MODEL_KEY, modelId);
-      autoLoadAttemptRef.current = '';
-
-      if (zayaEngine.getActiveModelId() && zayaEngine.getActiveModelId() !== modelId) {
-        await zayaEngine.unload();
-      }
-
-      await reconcileCurrentModel(modelId, { openSettingsOnProblem: true });
-    } catch (error) {
-      setToast({ id: createId('toast'), tone: 'error', message: toReadableError(error) });
+  useEffect(() => {
+    if (!bootstrapped) return;
+    if (!engineReady) {
+      setSettingsOpen(true);
     }
-  }
+  }, [bootstrapped, engineReady]);
 
   async function deleteModelCache() {
-    const modelId = selectedModelIdRef.current;
-
     try {
-      await zayaEngine.removeCachedModel(modelId);
+      await zayaEngine.removeCachedModel(selectedModelId);
+      const idleSession = createSetupSession({
+        modelId: selectedModelId,
+        phase: 'idle',
+        progressValue: 0,
+        progressText: 'Downloaded model was removed.',
+        cached: false,
+        engineReady: false,
+        completedSetup: false,
+        errorMessage: null,
+      });
+      updateCurrentSession(idleSession);
       autoLoadAttemptRef.current = '';
-      const idleSession = createIdleSession(modelId);
-      applySetupSession(idleSession);
+      setSettingsOpen(true);
       setToast({ id: createId('toast'), tone: 'success', message: 'Downloaded model removed.' });
     } catch (error) {
       setToast({ id: createId('toast'), tone: 'error', message: toReadableError(error) });
@@ -680,12 +748,11 @@ export default function App() {
       const created = createConversationRecord(selectedModelIdRef.current);
       await saveConversation(created);
       setConversations((current) => [created, ...current]);
-      conversationsRef.current = [created, ...conversationsRef.current];
-      activeConversationIdRef.current = created.id;
       setActiveConversationId(created.id);
-      messagesRef.current = [];
       setMessages([]);
-      setSettingsOpen(false);
+      if (engineReady) {
+        setSettingsOpen(false);
+      }
     } catch (error) {
       setToast({ id: createId('toast'), tone: 'error', message: toReadableError(error) });
     }
@@ -696,15 +763,10 @@ export default function App() {
       await deleteConversation(id);
       setConversations((current) => {
         const remaining = current.filter((item) => item.id !== id);
-        conversationsRef.current = remaining;
-
         if (activeConversationIdRef.current === id) {
-          activeConversationIdRef.current = remaining[0]?.id ?? '';
-          setActiveConversationId(activeConversationIdRef.current);
-          messagesRef.current = [];
+          setActiveConversationId(remaining[0]?.id ?? '');
           setMessages([]);
         }
-
         return remaining;
       });
     } catch (error) {
@@ -719,7 +781,7 @@ export default function App() {
     if (!userText || generatingRef.current || !chatUnlocked) return;
 
     const assistantMessageId = createId('msg');
-    const assistantCreatedAt = nowIso();
+    const assistantCreatedAt = new Date().toISOString();
     let streamedContent = '';
     let assistantConversationId = activeConversationIdRef.current;
 
@@ -737,20 +799,16 @@ export default function App() {
 
         if (index === -1) {
           if (!content.trim() && status === 'streaming') return current;
-          const nextMessages = [...current, nextMessage];
-          messagesRef.current = nextMessages;
-          return nextMessages;
+          return [...current, nextMessage];
         }
 
-        const nextMessages = current.map((message) => (message.id === assistantMessageId ? { ...nextMessage, conversationId: message.conversationId } : message));
-        messagesRef.current = nextMessages;
-        return nextMessages;
+        return current.map((message) => (message.id === assistantMessageId ? { ...nextMessage, conversationId: message.conversationId } : message));
       });
     };
 
     try {
       if (!zayaEngine.isReady(modelId)) {
-        await warmupModel({ modelId });
+        await warmupModel({ modelId, silentError: true });
       }
 
       if (!zayaEngine.isReady(modelId)) {
@@ -758,28 +816,13 @@ export default function App() {
       }
 
       setGenerating(true);
+      setEngineState('generating');
+      setEngineReady(true);
       setDraft('');
-      applySetupSession(createSetupSession(modelId, 'generating', {
-        progressValue: 1,
-        progressText: 'Offline model is ready on this device.',
-        cachedModel: true,
-        engineReady: true,
-        completedAt: setupSessionRef.current?.modelId === modelId ? setupSessionRef.current.completedAt : nowIso(),
-      }));
 
       const conversation = await ensureConversation(modelId);
       assistantConversationId = conversation.id;
-
-      const existingConversationMessages = conversation.id === activeConversationIdRef.current
-        ? messagesRef.current
-        : await listMessages(conversation.id);
-
-      if (activeConversationIdRef.current !== conversation.id) {
-        activeConversationIdRef.current = conversation.id;
-        setActiveConversationId(conversation.id);
-      }
-
-      const now = nowIso();
+      const now = new Date().toISOString();
       const userMessage: ChatMessage = {
         id: createId('msg'),
         conversationId: conversation.id,
@@ -789,9 +832,7 @@ export default function App() {
         status: 'complete',
       };
 
-      const nextMessages = [...existingConversationMessages, userMessage];
-      messagesRef.current = nextMessages;
-      setMessages(nextMessages);
+      setMessages((current) => [...current, userMessage]);
       await saveMessage(userMessage);
 
       const userConversationPatch: ConversationRecord = {
@@ -804,13 +845,11 @@ export default function App() {
 
       setConversations((current) => {
         const rest = current.filter((item) => item.id !== conversation.id);
-        const nextConversations = [userConversationPatch, ...rest];
-        conversationsRef.current = nextConversations;
-        return nextConversations;
+        return [userConversationPatch, ...rest];
       });
       await saveConversation(userConversationPatch);
 
-      const history = nextMessages
+      const history = [...messagesRef.current, userMessage]
         .filter((message) => message.status !== 'error' && message.content.trim())
         .map((message) => ({ role: message.role, content: message.content } satisfies ChatCompletionMessageParam));
 
@@ -838,22 +877,41 @@ export default function App() {
 
       const conversationPatch: ConversationRecord = {
         ...userConversationPatch,
-        updatedAt: nowIso(),
+        updatedAt: new Date().toISOString(),
         lastMessagePreview: finalAssistant.content.slice(0, 80),
       };
 
       setConversations((current) => {
         const rest = current.filter((item) => item.id !== conversation.id);
-        const nextConversations = [conversationPatch, ...rest];
-        conversationsRef.current = nextConversations;
-        return nextConversations;
+        return [conversationPatch, ...rest];
       });
       await saveConversation(conversationPatch);
 
-      applySetupSession(createReadySession(modelId, setupSessionRef.current?.modelId === modelId ? setupSessionRef.current : null));
+      const readySession = createSetupSession({
+        modelId,
+        phase: 'ready',
+        progressValue: 1,
+        progressText: DEFAULT_READY_TEXT,
+        cached: true,
+        engineReady: true,
+        completedSetup: true,
+        errorMessage: null,
+      });
+      updateCurrentSession(readySession);
     } catch (error) {
       const readable = toReadableError(error);
-      const stillReady = zayaEngine.isReady(modelId);
+      const cached = await refreshCachedModel(modelId);
+      const nextSession = createSetupSession({
+        modelId,
+        phase: zayaEngine.isReady(modelId) ? 'ready' : cached ? 'interrupted' : 'error',
+        progressValue: cached ? PHASE_PROGRESS.verifying[1] : 0,
+        progressText: cached ? getInterruptedText('initializing', true) : 'Offline setup failed before the model became ready. Try again.',
+        cached,
+        engineReady: zayaEngine.isReady(modelId),
+        completedSetup: setupSessionRef.current?.completedSetup ?? false,
+        errorMessage: readable,
+      });
+      updateCurrentSession(nextSession);
 
       if (streamedContent.trim()) {
         const failedAssistant: ChatMessage = {
@@ -868,21 +926,23 @@ export default function App() {
         await saveMessage(failedAssistant);
       }
 
-      if (stillReady) {
-        applySetupSession(createReadySession(modelId, setupSessionRef.current?.modelId === modelId ? setupSessionRef.current : null));
-      } else {
-        const cachedAfterFailure = await checkModelCached(modelId);
-        applySetupSession(createFailedSession(
-          modelId,
-          cachedAfterFailure,
-          readable,
-          setupSessionRef.current?.modelId === modelId ? setupSessionRef.current : null,
-        ));
-      }
-
       setToast({ id: createId('toast'), tone: 'error', message: readable });
+      setSettingsOpen(true);
     } finally {
       setGenerating(false);
+      if (zayaEngine.isReady(modelId)) {
+        const readySession = createSetupSession({
+          modelId,
+          phase: 'ready',
+          progressValue: 1,
+          progressText: DEFAULT_READY_TEXT,
+          cached: true,
+          engineReady: true,
+          completedSetup: true,
+          errorMessage: null,
+        });
+        updateCurrentSession(readySession);
+      }
     }
   }
 
@@ -890,17 +950,19 @@ export default function App() {
     try {
       await zayaEngine.interrupt();
       setGenerating(false);
-      setMessages((current) => {
-        const nextMessages = current.filter((message) => !(message.status === 'streaming' && !message.content.trim()));
-        messagesRef.current = nextMessages;
-        return nextMessages;
+      const cached = await refreshCachedModel(selectedModelIdRef.current);
+      const recovered = createSetupSession({
+        modelId: selectedModelIdRef.current,
+        phase: zayaEngine.isReady(selectedModelIdRef.current) ? 'ready' : cached ? 'downloaded' : 'error',
+        progressValue: zayaEngine.isReady(selectedModelIdRef.current) ? 1 : cached ? PHASE_PROGRESS.verifying[1] : 0,
+        progressText: zayaEngine.isReady(selectedModelIdRef.current) ? DEFAULT_READY_TEXT : cached ? DEFAULT_DOWNLOADED_TEXT : 'Offline setup needs attention.',
+        cached,
+        engineReady: zayaEngine.isReady(selectedModelIdRef.current),
+        completedSetup: setupSessionRef.current?.completedSetup ?? false,
+        errorMessage: null,
       });
-
-      if (zayaEngine.isReady(selectedModelIdRef.current)) {
-        applySetupSession(createReadySession(selectedModelIdRef.current, setupSessionRef.current));
-      } else {
-        await reconcileCurrentModel(selectedModelIdRef.current, { openSettingsOnProblem: true });
-      }
+      updateCurrentSession(recovered);
+      setMessages((current) => current.filter((message) => !(message.status === 'streaming' && !message.content.trim())));
     } catch (error) {
       setToast({ id: createId('toast'), tone: 'error', message: toReadableError(error) });
     }
@@ -910,25 +972,33 @@ export default function App() {
     try {
       await clearAllData();
       await zayaEngine.unload();
-      clearPersistedSetupSessions();
+      clearSetupSession();
       setConversations([]);
-      conversationsRef.current = [];
       setMessages([]);
-      messagesRef.current = [];
       setActiveConversationId('');
-      activeConversationIdRef.current = '';
       setDraft('');
       autoLoadAttemptRef.current = '';
-      applySetupSession(createIdleSession(selectedModelIdRef.current));
-      setSettingsOpen(false);
+      const idleSession = createSetupSession({
+        modelId: selectedModelIdRef.current,
+        phase: 'idle',
+        progressValue: 0,
+        progressText: DEFAULT_IDLE_TEXT,
+        cached: false,
+        engineReady: false,
+        completedSetup: false,
+        errorMessage: null,
+      });
+      updateCurrentSession(idleSession);
+      setSettingsOpen(true);
     } catch (error) {
       setToast({ id: createId('toast'), tone: 'error', message: toReadableError(error) });
     }
   }
 
-  const chatUnlocked = support.supported && engineReady && zayaEngine.isReady(selectedModelId) && (engineState === 'ready' || engineState === 'generating');
+  const chatUnlocked = support.supported && engineReady && (engineState === 'ready' || engineState === 'generating');
   const settingsBusy = isBusyState(engineState);
   const headerStatusLabel = getHeaderStatusLabel(engineState, online, chatUnlocked);
+  const composerPlaceholder = getComposerPlaceholder(engineState, chatUnlocked);
 
   return (
     <>
@@ -949,17 +1019,21 @@ export default function App() {
             onStop={stopGeneration}
             disabled={!chatUnlocked || generating}
             generating={generating}
-            placeholder={chatUnlocked ? 'Message Zaya…' : 'Open Offline setup to finish the first download…'}
+            placeholder={composerPlaceholder}
           />
         </main>
       </div>
 
       <SettingsSheet
         open={settingsOpen}
-        onClose={() => setSettingsOpen(false)}
-        canClose={!isSetupState(engineState)}
+        onClose={() => {
+          if (engineReady && !isSetupState(engineState)) {
+            setSettingsOpen(false);
+          }
+        }}
+        canClose={engineReady && !isSetupState(engineState)}
         selectedModelId={selectedModelId}
-        onSelectModel={handleSelectModel}
+        onSelectModel={setSelectedModelId}
         onWarmup={warmupModel}
         onDeleteCache={deleteModelCache}
         progressText={progressText}

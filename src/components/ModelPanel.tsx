@@ -15,14 +15,20 @@ interface ModelPanelProps {
 }
 
 function getButtonLabel(engineState: EngineState, cached: boolean): string {
-  if (engineState === 'downloading') return 'Downloading…';
-  if (engineState === 'verifying') return 'Verifying…';
-  if (engineState === 'loading') return 'Loading cached model…';
-  if (engineState === 'initializing') return 'Initializing…';
-  if (engineState === 'interrupted') return cached ? 'Resume loading cached model' : 'Restart offline setup';
-  if (engineState === 'failed') return cached ? 'Try loading downloaded model again' : 'Retry offline setup';
-  if (engineState === 'downloaded') return 'Load downloaded model';
-  if (engineState === 'ready' || engineState === 'generating') return 'Offline model is ready';
+  if (engineState === 'ready') return 'Offline model ready';
+  if (engineState === 'generating') return 'Zaya is replying…';
+  if (engineState === 'downloading' || engineState === 'verifying' || engineState === 'loading' || engineState === 'initializing') {
+    return 'Setting up…';
+  }
+  if (engineState === 'interrupted') {
+    return cached ? 'Resume setup' : 'Restart download';
+  }
+  if (engineState === 'downloaded') {
+    return 'Load downloaded model';
+  }
+  if (engineState === 'error') {
+    return cached ? 'Retry setup' : 'Download offline model';
+  }
   return cached ? 'Load downloaded model' : 'Download offline model';
 }
 
@@ -45,7 +51,7 @@ export function ModelPanel({
       <div>
         <p className="eyebrow">Offline setup</p>
         <h2>Choose your local brain</h2>
-        <p>Start with Starter. The larger model can wait until the device proves stable.</p>
+        <p>Start with Starter. Only move up after the phone proves it can boot the lighter model cleanly.</p>
       </div>
 
       <div className="sheet-models">
@@ -83,7 +89,12 @@ export function ModelPanel({
       </div>
 
       <div className="button-row">
-        <button className="button" type="button" onClick={() => void onWarmup()} disabled={busy || !supported || engineState === 'ready' || engineState === 'generating'}>
+        <button
+          className="button"
+          type="button"
+          onClick={() => void onWarmup()}
+          disabled={busy || !supported || engineState === 'ready' || engineState === 'generating'}
+        >
           {buttonLabel}
         </button>
         <button className="button button--ghost" type="button" onClick={() => void onDeleteCache()} disabled={busy || !cached}>

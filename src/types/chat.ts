@@ -8,16 +8,29 @@ export type EngineState =
   | 'initializing'
   | 'ready'
   | 'generating'
-  | 'failed'
-  | 'interrupted';
+  | 'interrupted'
+  | 'error';
 export type MessageStatus = 'complete' | 'streaming' | 'error';
 export type SetupPhase = Extract<EngineState, 'downloading' | 'verifying' | 'loading' | 'initializing' | 'ready'>;
+export type PersistedSetupState = Exclude<EngineState, 'generating'>;
 
 export interface EngineBootProgress {
   phase: SetupPhase;
   progress: number;
   text: string;
   rawText?: string;
+}
+
+export interface SetupSessionRecord {
+  modelId: string;
+  phase: PersistedSetupState;
+  progressValue: number;
+  progressText: string;
+  cached: boolean;
+  engineReady: boolean;
+  completedSetup: boolean;
+  updatedAt: string;
+  errorMessage?: string | null;
 }
 
 export interface ChatMessage {
@@ -51,18 +64,6 @@ export interface ModelOption {
   description: string;
   recommended?: boolean;
   caution?: string;
-}
-
-export interface SetupSession {
-  modelId: string;
-  state: EngineState;
-  progressValue: number;
-  progressText: string;
-  cachedModel: boolean;
-  engineReady: boolean;
-  updatedAt: string;
-  lastError?: string;
-  completedAt?: string;
 }
 
 export interface ToastState {

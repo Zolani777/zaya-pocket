@@ -33,8 +33,8 @@ function describeState(engineState: EngineState, cachedModel: boolean, engineRea
   if (engineState === 'loading') return 'loading';
   if (engineState === 'initializing') return 'initializing';
   if (engineState === 'generating') return 'replying';
-  if (engineState === 'failed') return 'failed';
   if (engineState === 'interrupted') return 'interrupted';
+  if (engineState === 'error') return 'needs attention';
   if (engineReady || engineState === 'ready') return 'ready';
   return cachedModel ? 'downloaded' : 'idle';
 }
@@ -119,7 +119,7 @@ export function SettingsSheet({
             activeConversationId={activeConversationId}
             onSelect={(id) => {
               onSelectConversation(id);
-              onClose();
+              if (canClose) onClose();
             }}
             onCreate={onCreateConversation}
             onDelete={onDeleteConversation}

@@ -53,14 +53,19 @@ export function toReadableError(error: unknown): string {
   const normalized = message.toLowerCase();
 
   if (normalized === '[object object]') {
-    return 'Offline setup failed while starting the local model. Try loading it again.';
+    return 'Offline setup failed while starting the local model. Reopen setup and try again.';
   }
 
   if (normalized.includes('another offline setup is already running')) {
     return 'Offline setup is already running. Wait for it to finish.';
   }
 
-  if (normalized.includes('response is not ok') || normalized.includes('failed to fetch') || normalized.includes('networkerror')) {
+  if (
+    normalized.includes('response is not ok') ||
+    normalized.includes('failed to fetch') ||
+    normalized.includes('networkerror') ||
+    normalized.includes('load failed')
+  ) {
     return 'The offline model files could not be downloaded. Check your connection and try again.';
   }
 
@@ -75,13 +80,9 @@ export function toReadableError(error: unknown): string {
     normalized.includes('shader-f16') ||
     normalized.includes('device was lost') ||
     normalized.includes('device lost') ||
-    normalized.includes('gpu error')
+    normalized.includes('repeatedly occurred')
   ) {
-    return 'This phone could not keep the local AI engine running. Reopen the app and use the Starter model.';
-  }
-
-  if (normalized.includes('repeatedly occurred') || normalized.includes('crash') || normalized.includes('interrupted while')) {
-    return 'Setup was interrupted before the local engine finished loading. Reopen settings and resume setup.';
+    return 'This phone could not keep the local AI engine alive. Reopen setup and use Starter.';
   }
 
   if (normalized.includes('abort')) {
@@ -100,12 +101,12 @@ export function toReadableError(error: unknown): string {
     return 'Some offline model files could not be found during setup.';
   }
 
-  if (normalized.includes('cache') || normalized.includes('indexeddb')) {
+  if (normalized.includes('cache')) {
     return 'The offline model cache could not be prepared correctly.';
   }
 
-  if (normalized.includes('internet once') || normalized.includes('internet connection')) {
-    return 'Connect to the internet once so the phone can finish the first offline download.';
+  if (normalized.includes('interrupted')) {
+    return 'Offline setup was interrupted before the model became ready. Reopen setup and continue.';
   }
 
   return message;
