@@ -1,4 +1,4 @@
-function extractMessage(value: unknown): string | null {
+export function extractErrorMessage(value: unknown): string | null {
   if (!value) return null;
 
   if (typeof value === 'string') {
@@ -13,7 +13,7 @@ function extractMessage(value: unknown): string | null {
 
   if (Array.isArray(value)) {
     for (const item of value) {
-      const nested = extractMessage(item);
+      const nested = extractErrorMessage(item);
       if (nested) return nested;
     }
     return null;
@@ -23,13 +23,13 @@ function extractMessage(value: unknown): string | null {
     const record = value as Record<string, unknown>;
 
     const direct =
-      extractMessage(record.message) ??
-      extractMessage(record.reason) ??
-      extractMessage(record.error) ??
-      extractMessage(record.details) ??
-      extractMessage(record.cause) ??
-      extractMessage(record.description) ??
-      extractMessage(record.statusText);
+      extractErrorMessage(record.message) ??
+      extractErrorMessage(record.reason) ??
+      extractErrorMessage(record.error) ??
+      extractErrorMessage(record.details) ??
+      extractErrorMessage(record.cause) ??
+      extractErrorMessage(record.description) ??
+      extractErrorMessage(record.statusText);
 
     if (direct) return direct;
 
@@ -48,8 +48,21 @@ function extractMessage(value: unknown): string | null {
   return null;
 }
 
+
+export function isRuntimeDisposedError(error: unknown): boolean {
+  const message = (extractErrorMessage(error) ?? '').toLowerCase();
+
+  return (
+    message.includes('bindingerror') ||
+    message.includes('deleted object') ||
+    message.includes('tokenizer') ||
+    message.includes('device was lost') ||
+    message.includes('device lost')
+  );
+}
+
 export function toReadableError(error: unknown): string {
-  const message = extractMessage(error) ?? 'Something went wrong.';
+  const message = extractErrorMessage(error) ?? 'Something went wrong.';
   const normalized = message.toLowerCase();
 
   if (normalized === '[object object]') {
@@ -73,13 +86,15 @@ export function toReadableError(error: unknown): string {
     return 'This device does not have enough free storage for the offline model.';
   }
 
+  if (isRuntimeDisposedError(error)) {
+    return 'The local AI session expired after the app resumed. Zaya needs to reload the cached model.';
+  }
+
   if (
     normalized.includes('compatible gpu') ||
     normalized.includes('webgpu') ||
     normalized.includes('adapter') ||
     normalized.includes('shader-f16') ||
-    normalized.includes('device was lost') ||
-    normalized.includes('device lost') ||
     normalized.includes('repeatedly occurred')
   ) {
     return 'This phone could not keep the local AI engine alive. Reopen setup and use Starter.';

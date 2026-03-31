@@ -7,6 +7,7 @@ import type {
 } from '@mlc-ai/web-llm';
 import { DEFAULT_MODEL_ID, MODEL_OPTIONS } from '@/constants/models';
 import type { EngineBootProgress, SetupPhase } from '@/types/chat';
+import { extractErrorMessage, isRuntimeDisposedError } from '@/lib/error';
 
 const ALLOWED_MODEL_IDS = new Set(MODEL_OPTIONS.map((model) => model.id));
 
@@ -46,6 +47,7 @@ class ZayaEngine {
   private bootModelId: string | null = null;
   private webllmModulePromise: Promise<typeof import('@mlc-ai/web-llm')> | null = null;
   private appConfig: AppConfig | null = null;
+  private stale = false;
 
   private getWebLLM() {
     if (!this.webllmModulePromise) {
@@ -59,8 +61,22 @@ class ZayaEngine {
   }
 
   isReady(modelId?: string): boolean {
+    if (this.stale) return false;
     if (!this.engine || !this.activeModelId) return false;
     return modelId ? this.activeModelId === modelId : true;
+  }
+
+  markStale(): void {
+    this.stale = true;
+  }
+
+  private async ensureFreshRuntime(modelId: string): Promise<void> {
+    if (!this.stale) return;
+    if (this.engine && this.activeModelId === modelId) {
+      await this.unload();
+    } else {
+      this.stale = false;
+    }
   }
 
   private async getAppConfig(): Promise<AppConfig> {
@@ -125,6 +141,8 @@ class ZayaEngine {
       throw new Error('This model is not supported by Zaya Pocket.');
     }
 
+    await this.ensureFreshRuntime(modelId);
+
     if (this.bootPromise) {
       if (this.bootModelId === modelId) {
         return this.bootPromise;
@@ -155,6 +173,7 @@ class ZayaEngine {
             initProgressCallback: progressCallback,
           });
           this.activeModelId = modelId;
+          this.stale = false;
           progressCallback({ progress: 1, timeElapsed: 0, text: 'Offline model is ready.' });
           return;
         }
@@ -171,6 +190,7 @@ class ZayaEngine {
           this.activeModelId = modelId;
         }
 
+        this.stale = false;
         progressCallback({ progress: 1, timeElapsed: 0, text: 'Offline model is ready.' });
       } catch (error) {
         await this.unload();
@@ -219,46 +239,64 @@ class ZayaEngine {
     this.activeModelId = null;
     this.worker?.terminate();
     this.worker = null;
+    this.stale = false;
+  }
+
+  private isRuntimeDead(error: unknown): boolean {
+    if (isRuntimeDisposedError(error)) return true;
+    const normalized = (extractErrorMessage(error) ?? '').toLowerCase();
+
+    return (
+      normalized.includes('worker') && normalized.includes('terminated')
+    );
   }
 
   async streamReply(
     messages: ChatCompletionMessageParam[],
     onToken: (token: string) => void,
   ): Promise<string> {
-    if (!this.engine) {
+    if (!this.engine || this.stale) {
       throw new Error('The model is not loaded yet.');
     }
 
-    const stream = await this.engine.chat.completions.create({
-      messages,
-      stream: true,
-      temperature: 0.7,
-      top_p: 0.95,
-    });
+    try {
+      const stream = await this.engine.chat.completions.create({
+        messages,
+        stream: true,
+        temperature: 0.7,
+        top_p: 0.95,
+      });
 
-    let finalText = '';
+      let finalText = '';
 
-    for await (const chunk of stream) {
-      const choice = chunk.choices[0];
-      if (!choice) continue;
+      for await (const chunk of stream) {
+        const choice = chunk.choices[0];
+        if (!choice) continue;
 
-      const token = this.normalizeDelta(choice.delta?.content);
-      if (token) {
-        finalText += token;
-        onToken(token);
+        const token = this.normalizeDelta(choice.delta?.content);
+        if (token) {
+          finalText += token;
+          onToken(token);
+        }
+
+        if (choice.finish_reason === 'abort') {
+          throw new Error('Generation was stopped before the reply finished.');
+        }
       }
 
-      if (choice.finish_reason === 'abort') {
-        throw new Error('Generation was stopped before the reply finished.');
+      const trimmed = finalText.trim();
+      if (!trimmed) {
+        throw new Error('The local model returned an empty reply. Please try again.');
       }
-    }
 
-    const trimmed = finalText.trim();
-    if (!trimmed) {
-      throw new Error('The local model returned an empty reply. Please try again.');
+      return trimmed;
+    } catch (error) {
+      if (this.isRuntimeDead(error)) {
+        this.markStale();
+        await this.unload();
+      }
+      throw error;
     }
-
-    return trimmed;
   }
 
   private normalizeDelta(delta: unknown): string {

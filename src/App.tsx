@@ -19,7 +19,7 @@ import {
   saveMessage,
   saveSetting,
 } from '@/lib/db';
-import { toReadableError } from '@/lib/error';
+import { isRuntimeDisposedError, toReadableError } from '@/lib/error';
 import { useOnlineStatus } from '@/hooks/useOnlineStatus';
 import { zayaEngine } from '@/services/engine';
 import type {
@@ -380,15 +380,8 @@ export default function App() {
 
   const refreshCachedModel = useCallback(async (modelId: string) => {
     try {
-      const cached = await zayaEngine.isModelCached(modelId);
-      if (selectedModelIdRef.current === modelId) {
-        setCachedModel(cached);
-      }
-      return cached;
+      return await zayaEngine.isModelCached(modelId);
     } catch {
-      if (selectedModelIdRef.current === modelId) {
-        setCachedModel(false);
-      }
       return false;
     }
   }, []);
@@ -402,8 +395,19 @@ export default function App() {
     setCachedModel(session.cached);
   }, []);
 
-  const reconcileModelState = useCallback(async (modelId: string) => {
+  const reconcileModelState = useCallback(async (modelId: string): Promise<SetupSessionRecord> => {
+    const currentSession = setupSessionRef.current;
+    if (warmupPromiseRef.current && warmupModelIdRef.current === modelId && currentSession && currentSession.modelId === modelId) {
+      return currentSession;
+    }
+
     const cached = await refreshCachedModel(modelId);
+
+    const sessionAfterCacheCheck = setupSessionRef.current;
+    if (warmupPromiseRef.current && warmupModelIdRef.current === modelId && sessionAfterCacheCheck && sessionAfterCacheCheck.modelId === modelId) {
+      return sessionAfterCacheCheck;
+    }
+
     const ready = zayaEngine.isReady(modelId);
     const previous = readSetupSession(modelId);
     const recovered = deriveRecoveredSession(modelId, cached, ready, previous);
@@ -416,6 +420,39 @@ export default function App() {
     persistSetupSession(session);
     applySessionToUi(session);
   }, [applySessionToUi, persistSetupSession]);
+
+  const markRuntimeForReload = useCallback((reasonText = 'Reloading cached model after app resume…') => {
+    const modelId = selectedModelIdRef.current;
+    const currentSession = setupSessionRef.current;
+    const cached = currentSession?.cached ?? cachedModelRef.current;
+    const completedSetup = currentSession?.completedSetup ?? false;
+    const hadReadyRuntime = zayaEngine.isReady(modelId) || currentSession?.engineReady === true;
+
+    if (!hadReadyRuntime && !completedSetup) {
+      return;
+    }
+
+    zayaEngine.markStale();
+    autoLoadAttemptRef.current = '';
+
+    if (generatingRef.current) {
+      setGenerating(false);
+    }
+
+    const nextSession = createSetupSession({
+      modelId,
+      phase: cached ? 'downloaded' : 'idle',
+      progressValue: cached ? PHASE_PROGRESS.verifying[1] : 0,
+      progressText: cached ? reasonText : DEFAULT_IDLE_TEXT,
+      cached,
+      engineReady: false,
+      completedSetup,
+      errorMessage: null,
+    });
+
+    updateCurrentSession(nextSession);
+    setSettingsOpen(true);
+  }, [updateCurrentSession]);
 
   const loadMessages = useCallback(async (conversationId: string) => {
     try {
@@ -664,6 +701,7 @@ export default function App() {
 
   useEffect(() => {
     if (!bootstrapped || !support.supported) return;
+    if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return;
     if (engineReady || zayaEngine.isReady(selectedModelId)) return;
     if (!cachedModel) {
       autoLoadAttemptRef.current = '';
@@ -685,6 +723,7 @@ export default function App() {
 
     const handleResume = () => {
       const modelId = selectedModelIdRef.current;
+      if (warmupPromiseRef.current && warmupModelIdRef.current === modelId) return;
       void reconcileModelState(modelId).then((recovered) => {
         if (!recovered.engineReady) {
           autoLoadAttemptRef.current = '';
@@ -693,20 +732,31 @@ export default function App() {
       });
     };
 
+    const handleHidden = () => {
+      markRuntimeForReload();
+    };
+
     const handleVisibilityChange = () => {
+      if (document.visibilityState === 'hidden') {
+        handleHidden();
+        return;
+      }
+
       if (document.visibilityState === 'visible') {
         handleResume();
       }
     };
 
     window.addEventListener('pageshow', handleResume);
+    window.addEventListener('pagehide', handleHidden);
     document.addEventListener('visibilitychange', handleVisibilityChange);
 
     return () => {
       window.removeEventListener('pageshow', handleResume);
+      window.removeEventListener('pagehide', handleHidden);
       document.removeEventListener('visibilitychange', handleVisibilityChange);
     };
-  }, [bootstrapped, reconcileModelState]);
+  }, [bootstrapped, markRuntimeForReload, reconcileModelState]);
 
   useEffect(() => {
     if (!toast) return;
@@ -858,10 +908,43 @@ export default function App() {
         ...history,
       ];
 
-      const finalText = await zayaEngine.streamReply(promptMessages, (token) => {
-        streamedContent += token;
-        upsertAssistantMessage(streamedContent, 'streaming');
-      });
+      let attemptedRuntimeRecovery = false;
+      const finalText = await (async () => {
+        while (true) {
+          try {
+            return await zayaEngine.streamReply(promptMessages, (token) => {
+              streamedContent += token;
+              upsertAssistantMessage(streamedContent, 'streaming');
+            });
+          } catch (error) {
+            if (attemptedRuntimeRecovery || streamedContent.trim() || !isRuntimeDisposedError(error)) {
+              throw error;
+            }
+
+            attemptedRuntimeRecovery = true;
+            const cachedBeforeRetry = await refreshCachedModel(modelId);
+            if (!cachedBeforeRetry) {
+              throw error;
+            }
+
+            const recoverySession = createSetupSession({
+              modelId,
+              phase: 'downloaded',
+              progressValue: PHASE_PROGRESS.verifying[1],
+              progressText: 'Reloading cached model after app resume…',
+              cached: true,
+              engineReady: false,
+              completedSetup: setupSessionRef.current?.completedSetup ?? true,
+              errorMessage: null,
+            });
+
+            updateCurrentSession(recoverySession);
+            autoLoadAttemptRef.current = '';
+            setSettingsOpen(true);
+            await warmupModel({ auto: true, modelId, silentError: true });
+          }
+        }
+      })();
 
       const finalAssistant: ChatMessage = {
         id: assistantMessageId,
